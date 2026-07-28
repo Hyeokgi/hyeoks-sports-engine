@@ -53,32 +53,46 @@ EURO_TIER_REGISTRY = {
 }
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 웹페이지 크롤러
+# 2. FotMob 실시간 데이터 웹페이지 철벽 필터링 크롤러
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id, league_name):
     url = f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"
     }
-    print(f" 🌐 [{league_name}] 실시간 원천 데이터 패킷 확보 중...")
+    
+    print(f" 🌐 [{league_name}] 진짜 경기 데이터 블록 탐색 중...")
     try:
         response = requests.get(url, headers=headers, timeout=12)
         if response.status_code != 200: return None
-        html = response.text
+            
+        html_content = response.text
         start_str = '<script id="__NEXT_DATA__" type="application/json">'
         end_str = '</script>'
-        if start_str in html:
-            s_idx = html.find(start_str) + len(start_str)
-            e_idx = html.find(end_str, s_idx)
-            full_json = json.loads(html[s_idx:e_idx].strip())
-            fallback = full_json.get('props', {}).get('pageProps', {}).get('fallback', {})
-            for k, v in fallback.items():
-                if "league" in k: return v
-            if 'data' in full_json.get('props', {}).get('pageProps', {}):
-                return full_json['props']['pageProps']['data']
+        
+        if start_str in html_content:
+            start_idx = html_content.find(start_str) + len(start_str)
+            end_idx = html_content.find(end_str, start_idx)
+            json_str = html_content[start_idx:end_idx].strip()
+            
+            full_json = json.loads(json_str)
+            page_props = full_json.get('props', {}).get('pageProps', {})
+            fallback_data = page_props.get('fallback', {})
+            
+            # [버그 수정] 경기 일정, 순위표가 확실하게 들어있는 진짜 알맹이 노드만 추출
+            for key, value in fallback_data.items():
+                if isinstance(value, dict):
+                    content = value.get('content', {})
+                    if isinstance(content, dict) and ('fixtures' in content or 'table' in content or 'matches' in content):
+                        return value
+                    if 'fixtures' in value or 'table' in value or 'matches' in value:
+                        return value
+            if 'data' in page_props: return page_props['data']
+            return page_props
     except Exception as e:
-        print(f"  ❌ 크롤링 실패: {e}")
+        print(f"  ❌ 크롤링 중 에러 발생: {e}")
     return None
 
 def extract_match_date(match):
@@ -92,15 +106,17 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 하이브리드 데이터베이스 분화 파서 (최종 완전판)
+# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (경기, 팀, 선수 3대 매트릭스 추출)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
     if not data: return [], [], []
+    
     content = data.get('content', data) if isinstance(data, dict) else {}
     table_data_root = content.get('table', [])
     
-    # [A] 구역: 3원 교차 순위표(All, Home, Away) 구조 다각도 분해 및 계산
+    # [A] 구역: 3원 교차 순위표 구조 다각도 분해 및 계산
     tables_dict = {'all': [], 'home': [], 'away': []}
+    table_rows = []
     
     if isinstance(table_data_root, list) and len(table_data_root) > 0:
         for t_item in table_data_root:
@@ -123,7 +139,6 @@ def analyze_league_matches(data, league_name):
             tables_dict['home'] = inner_table.get('home', [])
             tables_dict['away'] = inner_table.get('away', [])
             
-    # 팀 네임드 기반 다차원 스플릿 매핑 아카이브 구축
     team_map = {}
     valid_league_teams = set()
     max_pts_in_league = 0
@@ -148,7 +163,6 @@ def analyze_league_matches(data, league_name):
                 except: pts = 0.0
                 if pts > max_pts_in_league: max_pts_in_league = pts
 
-    # 💡 [핵심 연산 마법] 팀별 종합, 홈, 원정 세부 통계 레이어 한 칸 한 칸 빌드업
     team_summary_rows = []
     for t_name, split_data in team_map.items():
         r_all = split_data.get('all', {})
@@ -173,7 +187,6 @@ def analyze_league_matches(data, league_name):
         p_home, wr_home, rec_home, gf_home, ga_home = calculate_metrics(r_home)
         p_away, wr_away, rec_away, gf_away, ga_away = calculate_metrics(r_away)
         
-        # 최근 5경기 폼 문자열화 가공
         form_list = r_all.get('form', [])
         form_str = ",".join([f.get('result', '?') if isinstance(f, dict) else str(f) for f in form_list]) if isinstance(form_list, list) else "-"
         
@@ -185,7 +198,7 @@ def analyze_league_matches(data, league_name):
             form_str, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
 
-    # [B] 구역: 숨겨진 플레이어 통계 데이터 해독
+    # [B] 구역: 선수 숨은 지표 추출
     player_rows = []
     p_stats = content.get('stats', {}).get('players', []) if isinstance(content.get('stats'), dict) else []
     if isinstance(p_stats, list):
@@ -202,20 +215,46 @@ def analyze_league_matches(data, league_name):
                                 league_name, str(p_rank), stat_name, str(p.get('value', '-')), datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             ])
 
-    # [C] 구역: 경기 일정 시뮬레이터 가동
-    fixtures_data = content.get('fixtures', {})
-    matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
-    if not matches and 'matches' in content:
-        matches = content.get('matches', {}).get('allMatches', [])
-    if not isinstance(matches, list): matches = []
+    # [C] 구역: 경기 일정 파싱 및 안전 가공 (축약 문법 버그 제거)
+    matches = []
+    if isinstance(data, dict):
+        c_node = data.get('content', {})
+        search_nodes = [c_node, data] if isinstance(c_node, dict) else [data]
+        for node in search_nodes:
+            if not isinstance(node, dict): continue
+            fix = node.get('fixtures', {})
+            if isinstance(fix, dict):
+                am = fix.get('allMatches', fix.get('fixtures', []))
+                if isinstance(am, list) and len(am) > 0:
+                    matches = am
+                    break
+            elif isinstance(fix, list) and len(fix) > 0:
+                matches = fix
+                break
+            mat = node.get('matches', {})
+            if isinstance(mat, dict):
+                am = mat.get('allMatches', mat.get('matches', []))
+                if isinstance(am, list) and len(am) > 0:
+                    matches = am
+                    break
+            elif isinstance(mat, list) and len(mat) > 0:
+                matches = mat
+                break
+    elif isinstance(data, list): matches = data
 
+    if not isinstance(matches, list) or not matches: 
+        return [], team_summary_rows, player_rows
+        
     matches = [m for m in matches if isinstance(m, dict)]
     raw_parsed_matches = []
     max_future_date = datetime.now() + timedelta(days=60)
     
     for match in matches:
-        home_team = match.get('home', {}).get('name')
-        away_team = match.get('away', {}).get('name')
+        home_node = match.get('home', {}) if isinstance(match.get('home'), dict) else {}
+        away_node = match.get('away', {}) if isinstance(match.get('away'), dict) else {}
+        home_team = home_node.get('name')
+        away_team = away_node.get('name')
+        
         if not home_team or not away_team: continue
         if valid_league_teams and (home_team not in valid_league_teams or away_team not in valid_league_teams): continue
             
@@ -231,24 +270,28 @@ def analyze_league_matches(data, league_name):
         home_score, away_score = "", ""
         if is_finished and '-' in score_str:
             parts = score_str.split('-')
-            home_score, away_score = parts[0].strip(), parts[1].strip()
+            if len(parts) == 2:
+                home_score, away_score = parts[0].strip(), parts[1].strip()
             
         raw_parsed_matches.append({
             'id': match.get('id'), 'date': m_date, 'home': home_team, 'away': away_team,
             'finished': is_finished, 'home_score': home_score, 'away_score': away_score
         })
 
+    if not raw_parsed_matches: return [], team_summary_rows, player_rows
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
+    
+    finished_count = sum(1 for m in raw_parsed_matches if m['finished'])
+    is_preseason = (finished_count == 0)
+    all_teams_in_fixtures = set([m['home'] for m in raw_parsed_matches] + [m['away'] for m in raw_parsed_matches])
+    
     elo_dict = {}
-    for team in valid_league_teams:
+    for team in all_teams_in_fixtures:
         if team in EURO_TIER_REGISTRY: elo_dict[team] = EURO_TIER_REGISTRY[team]
         elif team in team_map and team_map[team]['all'].get('pts'):
             elo_dict[team] = 1500.0 + (float(team_map[team]['all']['pts']) * 3.0)
         else: elo_dict[team] = 1500.0
 
-    finished_count = sum(1 for m in raw_parsed_matches if m['finished'])
-    is_preseason = (finished_count == 0)
-    
     if is_preseason and not any(t in EURO_TIER_REGISTRY for t in valid_league_teams):
         for team in valid_league_teams:
             rank = team_map.get(team, {}).get('all', {}).get('idx', 10)
@@ -276,6 +319,7 @@ def analyze_league_matches(data, league_name):
         def get_recent_avg(history): return round(sum(history[-5:]) / len(history[-5:]), 2) if history else 0.0
         def get_clean_sheet_count(history): return history[-5:].count(1) if history else 0
 
+        # [오타 수정] 변수 선언 이름과 하단 시트 매핑 이름 일치 작업 완료
         attack_trend = round(get_recent_avg(team_goals_scored.get(home)) - get_recent_avg(team_goals_scored.get(away)), 2)
         defense_trend = round(get_recent_avg(team_goals_conceded.get(home)) - get_recent_avg(team_goals_conceded.get(away)), 2)
         sheet_trend = get_clean_sheet_count(team_clean_sheets.get(home)) - get_clean_sheet_count(team_clean_sheets.get(away))
@@ -290,12 +334,13 @@ def analyze_league_matches(data, league_name):
             S_h = 1.0 if hs > as_ else (0.5 if hs == as_ else 0.0)
             E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - home_elo) / 400.0))
             K = 40 if league_name in ["챔피언스리그", "유로파리그"] else 32
-            elo_dict[home] += K * (S_h - E_h); elo_dict[away] += K * ((1.0 - S_h) - (1.0 - E_h))
+            elo_dict[home] += K * (S_h - E_h); elo_dict[away] += K * ((1.0 - S_h) - (1.0 - Eh))
 
         league_rows.append([
             str(m['id']), str(m['date']), league_name, home, away,
             str(m['home_score']), str(m['away_score']), str(power_diff),
-            str(attack), str(defense), str(sheet), tactical_match, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            str(attack_trend), str(defense_trend), str(sheet_trend), 
+            tactical_match, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
         
     return league_rows, team_summary_rows, player_rows
@@ -308,10 +353,10 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     if rows: worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 4. 메인 컨트롤 오케스트레이션
+# 5. 메인 컨트롤 오케스트레이션 (바인딩 조건 수정)
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 멀티 매트릭스 통합 엔진 v4.0 Ultimate 가동] ========")
+    print("======== [HYEOKS 멀티 매트릭스 통합 엔진 v4.1 완전 보수판 가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
         "54": "분데스리가", "55": "세리에A", "102": "J1리그"
@@ -319,7 +364,6 @@ def main():
     sh = init_google_sheet()
     
     match_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈스코어", "원정스코어", "전력차 지표(Elo)", "공격격차 지표(득점)", "수비격차 지표(실점)", "방어안정성(클린시트)", "전술매칭", "최종 갱신일자"]
-    
     team_headers = [
         "팀명", "리그", "현재순위", "현재승점", 
         "종합_경기수", "종합_승률(%)", "종합_전적", "종합_평균득점", "종합_평균실점",
@@ -327,7 +371,6 @@ def main():
         "원정_경기수", "원정_승률(%)", "원정_전적", "원정_평균득점", "원정_평균실점",
         "최근5경기_폼", "최종갱신일자"
     ]
-    
     player_headers = ["선수ID", "선수명", "소속팀", "리그", "지표순위", "활약 지표 종류", "기록 수치", "최종갱신일자"]
     
     all_matches, all_teams, all_players = [], [], []
@@ -337,22 +380,24 @@ def main():
         raw_data = fetch_fotmob_league_data(l_id, l_name)
         if raw_data:
             m_rows, t_rows, p_rows = analyze_league_matches(raw_data, l_name)
-            if m_rows:
+            # [버그 수정] 경기가 비어있어도 팀/선수 정보가 확보되었다면 누적 처리 진행
+            if m_rows or t_rows or p_rows:
                 all_matches.extend(m_rows)
                 all_teams.extend(t_rows)
                 all_players.extend(p_rows)
                 league_separated_data[l_name] = m_rows
-                print(f"  -> {l_name} 3대 전술/팀/선수 매트릭스 완전 분화 완주 성공")
-        time.sleep(1.2)
+                print(f"  -> {l_name} 3대 매트릭스 전술 분석 완료")
+        time.sleep(1.0)
         
-    if not all_matches:
+    if not all_matches and not all_teams:
         print("❌ 동기화할 데이터가 존재하지 않습니다.")
         return
 
     print("\n[구글시트] 매트릭스 다각도 탭 매립 동기화 중...")
-    all_matches.sort(key=lambda x: (x[1], x[0]), reverse=True)
-    
-    update_worksheet_safely(sh, "전체", match_headers, all_matches)
+    if all_matches:
+        all_matches.sort(key=lambda x: (x[1], x[0]), reverse=True)
+        update_worksheet_safely(sh, "전체", match_headers, all_matches)
+        
     update_worksheet_safely(sh, "HYEOKS_팀통계", team_headers, all_teams)
     update_worksheet_safely(sh, "HYEOKS_선수통계", player_headers, all_players)
     
@@ -361,7 +406,7 @@ def main():
             rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, match_headers, rows)
             
-    print(" 🎉 [대성공] HYEOKS 데이터베이스 프로젝트 구축 완료!")
+    print(" 🎉 [대성공] HYEOKS 최고존엄 데이터베이스 및 탭 자동 연동 완수!")
 
 if __name__ == "__main__":
     main()
