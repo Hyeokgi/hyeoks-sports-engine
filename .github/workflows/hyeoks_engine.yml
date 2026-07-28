@@ -17,12 +17,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 필수 라이브러리 설치
+      - name: 필수 라이브러리 및 AI 패키지 설치
         run: |
           python -m pip install --upgrade pip
-          pip install gspread oauth2client requests
+          pip install gspread oauth2client requests pandas numpy scikit-learn
 
-      - name: 크롤러 및 시뮬레이션 엔진 실행
+      - name: 크롤러 실행 및 머신러닝 예측 엔진 풀가동
         env:
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
         run: |
