@@ -21,10 +21,9 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 # -------------------------------------------------------------------------
-# 💡 [HYEOKS 핵심 매트릭스] 유럽 4대 리그 프리시즌 체급 레지스트리 (전체 확장)
+# 💡 [HYEOKS 핵심 매트릭스] 유럽 4대 리그 프리시즌 체급 레지스트리
 # -------------------------------------------------------------------------
 EURO_TIER_REGISTRY = {
-    # EPL
     "Arsenal": 1620.0, "Manchester City": 1620.0, "Liverpool": 1620.0, 
     "Manchester United": 1550.0, "Tottenham Hotspur": 1550.0, "Aston Villa": 1550.0, 
     "Newcastle United": 1550.0, "Chelsea": 1550.0, "Brighton & Hove Albion": 1480.0, 
@@ -32,8 +31,6 @@ EURO_TIER_REGISTRY = {
     "AFC Bournemouth": 1460.0, "Nottingham Forest": 1410.0, "Wolverhampton Wanderers": 1410.0, 
     "Ipswich Town": 1360.0, "Leicester City": 1360.0, "Southampton": 1350.0, 
     "Coventry City": 1350.0, "Hull City": 1350.0, "Sunderland": 1350.0, "Leeds United": 1360.0,
-    
-    # La Liga
     "Real Madrid": 1620.0, "Barcelona": 1620.0, "Atletico Madrid": 1550.0, 
     "Real Sociedad": 1550.0, "Athletic Club": 1550.0, "Villarreal": 1530.0, 
     "Real Betis": 1480.0, "Sevilla": 1480.0, "Valencia": 1470.0, "Osasuna": 1470.0, 
@@ -41,16 +38,12 @@ EURO_TIER_REGISTRY = {
     "Mallorca": 1410.0, "Las Palmas": 1400.0, "Espanyol": 1360.0, "Real Valladolid": 1350.0, 
     "Leganes": 1350.0, "Levante": 1350.0, "Racing Santander": 1350.0, "Deportivo A Coruña": 1350.0, 
     "Elche": 1350.0, "Malaga": 1350.0,
-    
-    # Serie A
     "Inter": 1620.0, "Juventus": 1620.0, "Milan": 1550.0, "Atalanta": 1550.0, 
     "Roma": 1550.0, "Napoli": 1600.0, "Lazio": 1530.0, "Fiorentina": 1480.0, 
     "Bologna": 1480.0, "Torino": 1470.0, "Monza": 1460.0, "Genoa": 1460.0, 
     "Udinese": 1460.0, "Lecce": 1410.0, "Cagliari": 1410.0, "Empoli": 1400.0, 
     "Verona": 1400.0, "Sassuolo": 1410.0, "Parma": 1360.0, "Como": 1360.0, 
     "Venezia": 1350.0, "Frosinone": 1350.0,
-    
-    # Bundesliga
     "Bayern München": 1620.0, "Bayer Leverkusen": 1620.0, "Borussia Dortmund": 1550.0, 
     "RB Leipzig": 1550.0, "Eintracht Frankfurt": 1520.0, "VfB Stuttgart": 1490.0, 
     "Freiburg": 1480.0, "Hoffenheim": 1480.0, "Mainz 05": 1470.0, "Borussia Mönchengladbach": 1460.0, 
@@ -114,30 +107,31 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 4. HYEOKS 하이브리드 연대기 시뮬레이터 (완전 무결점 버전)
+# 4. HYEOKS 하이브리드 연대기 시뮬레이터 (경기, 팀, 선수 3대 매트릭스 추출)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
-    if not data: return []
+    if not data: return [], [], []
     
+    content = data.get('content', data) if isinstance(data, dict) else {}
+    table_data_root = content.get('table', [])
+    
+    # [A] 팀 통계 데이터 추출 및 가공 구역
     team_stats = {}
     valid_league_teams = set()
     max_pts_in_league = 0
     total_teams_count = 0
     table_rows = []
     
-    if isinstance(data, dict):
-        c_node = data.get('content', {})
-        t_node = c_node.get('table', []) if isinstance(c_node, dict) else data.get('table', [])
-        
-        if isinstance(t_node, list) and len(t_node) > 0:
-            first_item = t_node[0]
-            if isinstance(first_item, dict):
-                t_data = first_item.get('data', {})
-                if isinstance(t_data, dict): table_rows = t_data.get('table', [])
-                if not table_rows: table_rows = first_item.get('table', [])
-        elif isinstance(t_node, dict):
-            table_rows = t_node.get('table', [])
+    if isinstance(table_data_root, list) and len(table_data_root) > 0:
+        first_item = table_data_root[0]
+        if isinstance(first_item, dict):
+            t_data = first_item.get('data', {})
+            if isinstance(t_data, dict): table_rows = t_data.get('table', [])
+            if not table_rows: table_rows = first_item.get('table', [])
+    elif isinstance(table_data_root, dict):
+        table_rows = table_data_root.get('table', [])
             
+    team_summary_rows = []
     if isinstance(table_rows, list):
         table_rows = [r for r in table_rows if isinstance(r, dict)]
         total_teams_count = len(table_rows)
@@ -153,7 +147,30 @@ def analyze_league_matches(data, league_name):
                     'rank': row.get('idx') or row.get('rank', 1),
                     'pts': pts
                 }
+                # 팀 통계 로우 생성
+                team_summary_rows.append([
+                    t_name, league_name, str(row.get('idx', '-')), str(int(pts)),
+                    str(row.get('played', 0)), f"{row.get('won', 0)}승 {row.get('draw', 0)}무 {row.get('lost', 0)}패",
+                    str(row.get('goalsFor', 0)), str(row.get('goalsConceded', 0)), datetime.now().strftime('%Y-%m-%d')
+                ])
 
+    # [B] 앱 수준 선수 숨은 전술 지표 추출 구역
+    player_rows = []
+    p_stats = content.get('stats', {}).get('players', []) if isinstance(content.get('stats'), dict) else []
+    if isinstance(p_stats, list):
+        for stat_group in p_stats:
+            if isinstance(stat_group, dict):
+                stat_name = stat_group.get('header', '기타 지표')
+                top_players = stat_group.get('topThree', stat_group.get('data', []))
+                if isinstance(top_players, list):
+                    for p in top_players:
+                        if isinstance(p, dict):
+                            player_rows.append([
+                                str(p.get('id', '-')), p.get('name', 'Unknown'), p.get('teamName', league_name),
+                                league_name, stat_name, str(p.get('value', '-')), datetime.now().strftime('%Y-%m-%d')
+                            ])
+
+    # [C] 경기 일정 및 인젝터 연산 구역
     matches = []
     if isinstance(data, dict):
         c_node = data.get('content', {})
@@ -172,7 +189,7 @@ def analyze_league_matches(data, league_name):
             elif isinstance(mat, list) and len(mat) > 0: {matches := mat}; break
     elif isinstance(data, list): matches = data
 
-    if not isinstance(matches, list) or not matches: return []
+    if not isinstance(matches, list) or not matches: return [], team_summary_rows, player_rows
     matches = [m for m in matches if isinstance(m, dict)]
     
     raw_parsed_matches = []
@@ -211,35 +228,24 @@ def analyze_league_matches(data, league_name):
             'finished': is_finished, 'home_score': home_score, 'away_score': away_score
         })
 
-    if not raw_parsed_matches: return []
+    if not raw_parsed_matches: return [], team_summary_rows, player_rows
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
     
-    # 💡 [버그 원천 진압] 순위표가 비어있어도 완료된 경기가 0개이면 100% 프리시즌으로 확정 감지
     finished_count = sum(1 for m in raw_parsed_matches if m['finished'])
     is_preseason = (finished_count == 0)
-    
     all_teams_in_fixtures = set([m['home'] for m in raw_parsed_matches] + [m['away'] for m in raw_parsed_matches])
     
-    # Elo 체급 세팅
     elo_dict = {}
     for team in all_teams_in_fixtures:
-        if team in EURO_TIER_REGISTRY:
-            elo_dict[team] = EURO_TIER_REGISTRY[team]
-        elif team in team_stats:
-            # 승점이 있는 일반 리그 처리
-            elo_dict[team] = 1500.0 + (team_stats[team]['pts'] * 3.0)
+        if team in EURO_TIER_REGISTRY: elo_dict[team] = EURO_TIER_REGISTRY[team]
+        elif team in team_stats: elo_dict[team] = 1500.0 + (team_stats[team]['pts'] * 3.0)
         elif is_preseason and team in team_stats:
             rank = team_stats[team]['rank']
             rank_factor = (total_teams_count - rank) / (total_teams_count - 1) if total_teams_count > 1 else 0.5
             elo_dict[team] = 1380.0 + (rank_factor * 240.0)
-        else:
-            elo_dict[team] = 1450.0
+        else: elo_dict[team] = 1450.0
 
-    # 💡 프리시즌 강제 지표 인젝터 (비어있을 때 프록시 득실점 투입)
-    team_goals_scored = {}
-    team_goals_conceded = {}
-    team_clean_sheets = {}
-    
+    team_goals_scored, team_goals_conceded, team_clean_sheets = {}, {}, {}
     for team, initial_elo in elo_dict.items():
         if is_preseason:
             proxy_scored = round((initial_elo - 1200) / 200, 2)
@@ -249,42 +255,32 @@ def analyze_league_matches(data, league_name):
             team_goals_conceded[team] = [proxy_conceded] * 5
             team_clean_sheets[team] = [proxy_clean] * 5
         else:
-            team_goals_scored[team] = []
-            team_goals_conceded[team] = []
-            team_clean_sheets[team] = []
+            team_goals_scored[team], team_goals_conceded[team], team_clean_sheets[team] = [], [], []
 
     league_rows = []
     for m in raw_parsed_matches:
         home, away = m['home'], m['away']
-        home_elo, away_elo = elo_dict[home], elo_dict[away]
+        home_elo, away_elo = elo_dict.get(home, 1500.0), elo_dict.get(away, 1500.0)
         power_diff = round(home_elo - away_elo, 2)
         
-        def get_recent_avg(history):
-            if not history: return 0.0
-            return round(sum(history[-5:]) / len(history[-5:]), 2)
-        def get_clean_sheet_count(history):
-            if not history: return 0
-            return history[-5:].count(1)
+        def get_recent_avg(history): return round(sum(history[-5:]) / len(history[-5:]), 2) if history else 0.0
+        def get_clean_sheet_count(history): return history[-5:].count(1) if history else 0
 
-        attack_trend = round(get_recent_avg(team_goals_scored[home]) - get_recent_avg(team_goals_scored[away]), 2)
-        defense_trend = round(get_recent_avg(team_goals_conceded[home]) - get_recent_avg(team_goals_conceded[away]), 2)
-        sheet_trend = get_clean_sheet_count(team_clean_sheets[home]) - get_clean_sheet_count(team_clean_sheets[away])
+        attack_trend = round(get_recent_avg(team_goals_scored.get(home)) - get_recent_avg(team_goals_scored.get(away)), 2)
+        defense_trend = round(get_recent_avg(team_goals_conceded.get(home)) - get_recent_avg(team_goals_conceded.get(away)), 2)
+        sheet_trend = get_clean_sheet_count(team_clean_sheets.get(home)) - get_clean_sheet_count(team_clean_sheets.get(away))
         tactical_match = "주도 vs 역습" if power_diff > 85 else ("역습 vs 주도" if power_diff < -85 else "균형 vs 균형")
         
         if m['finished']:
             h_s, a_s = m['home_score'], m['away_score']
-            team_goals_scored[home].append(h_s)
-            team_goals_scored[away].append(a_s)
-            team_goals_conceded[home].append(a_s)
-            team_goals_conceded[away].append(h_s)
-            team_clean_sheets[home].append(1 if a_s == 0 else 0)
-            team_clean_sheets[away].append(1 if h_s == 0 else 0)
+            team_goals_scored.setdefault(home, []).append(h_s); team_goals_scored.setdefault(away, []).append(a_s)
+            team_goals_conceded.setdefault(home, []).append(a_s); team_goals_conceded.setdefault(away, []).append(h_s)
+            team_clean_sheets.setdefault(home, []).append(1 if a_s == 0 else 0); team_clean_sheets.setdefault(away, []).append(1 if h_s == 0 else 0)
             
             S_h = 1.0 if h_s > a_s else (0.5 if h_s == a_s else 0.0)
             E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - home_elo) / 400.0))
             K = 40 if league_name in ["챔피언스리그", "유로파리그", "월드컵"] else 32
-            elo_dict[home] += K * (S_h - E_h)
-            elo_dict[away] += K * ((1.0 - S_h) - (1.0 - E_h))
+            elo_dict[home] += K * (S_h - E_h); elo_dict[away] += K * ((1.0 - S_h) - (1.0 - E_h))
 
         league_rows.append([
             str(m['id']), str(m['date']), league_name, home, away,
@@ -294,7 +290,7 @@ def analyze_league_matches(data, league_name):
             tactical_match, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
         
-    return league_rows
+    return league_rows, team_summary_rows, player_rows
 
 def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     try: worksheet = spreadsheet.worksheet(sheet_title)
@@ -303,47 +299,52 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     worksheet.append_row(headers)
     if rows: worksheet.append_rows(rows)
 
+# -------------------------------------------------------------------------
+# 5. 메인 실행 컨트롤러
+# -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v3.1 완결 프리시즌 지표 패치 가동] ========")
+    print("======== [HYEOKS 멀티 매트릭스 통합 엔진 v3.5 풀가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
-        "54": "분데스리가", "55": "세리에A", "102": "J1리그", 
-        "42": "챔피언스리그", "73": "유로파리그", "77": "월드컵", "132": "남축INTL"
+        "54": "분데스리가", "55": "세리에A", "102": "J1리그"
     }
     sh = init_google_sheet()
-    headers = [
-        "경기ID", "일시", "리그", "홈팀", "원정팀", "홈스코어", "원정스코어", 
-        "전력차 지표(Elo)", "공격격차 지표(득점)", "수비격차 지표(실점)", 
-        "방어안정성(클린시트)", "전술매칭", "최종 갱신일자"
-    ]
-    all_combined_rows = []
+    
+    match_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈스코어", "원정스코어", "전력차 지표(Elo)", "공격격차 지표(득점)", "수비격차 지표(실점)", "방어안정성(클린시트)", "전술매칭", "최종 갱신일자"]
+    team_headers = ["팀명", "리그", "현재순위", "현재승점", "경기수", "종합전적", "총득점", "총실점", "추적일자"]
+    player_headers = ["선수ID", "선수명", "소속팀", "리그", "활약 지표 종류", "기록 수치", "추적일자"]
+    
+    all_matches, all_teams, all_players = [], [], []
     league_separated_data = {name: [] for name in TARGET_LEAGUES.values()}
     
     for l_id, l_name in TARGET_LEAGUES.items():
         raw_data = fetch_fotmob_league_data(l_id, l_name)
         if raw_data:
-            league_results = analyze_league_matches(raw_data, l_name)
-            if league_results:
-                all_combined_rows.extend(league_results)
-                league_separated_data[l_name] = league_results
-                print(f"  -> {l_name} 연산 완료 (데이터 {len(league_results)}건)")
+            m_rows, t_rows, p_rows = analyze_league_matches(raw_data, l_name)
+            if m_rows:
+                all_matches.extend(m_rows)
+                all_teams.extend(t_rows)
+                all_players.extend(p_rows)
+                league_separated_data[l_name] = m_rows
+                print(f"  -> {l_name} 3대 전술 매트릭스 가공 완주 성공")
         time.sleep(1.0)
         
-    if not all_combined_rows:
+    if not all_matches:
         print("❌ 동기화할 경기 데이터가 없습니다.")
         return
 
-    print("\n[구글시트] '전체' 통합 탭 동기화 중...")
-    all_combined_rows.sort(key=lambda x: (x[1], x[0]), reverse=True)
-    update_worksheet_safely(sh, "전체", headers, all_combined_rows)
+    print("\n[구글시트] 매트릭스 다각도 탭 매립 동기화 중...")
+    all_matches.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    update_worksheet_safely(sh, "전체", match_headers, all_matches)
+    update_worksheet_safely(sh, "HYEOKS_팀통계", team_headers, all_teams)
+    update_worksheet_safely(sh, "HYEOKS_선수통계", player_headers, all_players)
     
-    print("[구글시트] 각 리그별 개별 탭 분리 동기화 중...")
     for l_name, rows in league_separated_data.items():
         if rows:
             rows.sort(key=lambda x: (x[1], x[0]))
-            update_worksheet_safely(sh, l_name, headers, rows)
+            update_worksheet_safely(sh, l_name, match_headers, rows)
             
-    print(" 🎉 [대성공] 프리시즌 데이터 공백 완전 돌파! 유럽 리그 지표 복구 완료!")
+    print(" 🎉 [대성공] 전세계 모든 유럽 프리시즌 지표 복구 및 팀/선수 신규 매트릭스 분리 이식 완료!")
 
 if __name__ == "__main__":
     main()
