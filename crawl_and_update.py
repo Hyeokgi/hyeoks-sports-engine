@@ -82,44 +82,85 @@ def fetch_fotmob_league_data(league_id="9116"):
         return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 엔진 고도화 변수 연산 (웹페이지 데이터 구조 최적화)
+# 3. HYEOKS 엔진 고도화 변수 연산 (방어적 데이터 예외 처리 완벽 버전)
 # -------------------------------------------------------------------------
 def analyze_matches(data):
-    # 구조 레이어 방어 코드
+    if not data or not isinstance(data, dict):
+        print("⚠️ 분석할 데이터가 올바른 딕셔너리 형식이 아닙니다.")
+        return []
+
     content = data.get('content', data) if isinstance(data, dict) else {}
+    if not isinstance(content, dict):
+        content = {}
+        
     fixtures_data = content.get('fixtures', {})
     table_data_root = content.get('table', [])
     
-    # 팀별 순위 및 승점 매핑 테이블 빌드
+    # 팀별 순위 및 승점 매핑 테이블 빌드 (문자열 난입 방어 코드 추가)
     team_stats = {}
-    if isinstance(table_data_root, list) and len(table_data_root) > 0:
-        table_rows = table_data_root[0].get('data', {}).get('table', [])
-        for row in table_rows:
-            t_name = row.get('name')
-            team_stats[t_name] = {
-                'rank': row.get('idx'),
-                'pts': row.get('pts')
-            }
+    if isinstance(table_data_root, list):
+        for table_item in table_data_root:
+            if isinstance(table_item, dict):
+                t_data = table_item.get('data', {})
+                t_rows = []
+                if isinstance(t_data, dict):
+                    t_rows = t_data.get('table', [])
+                
+                # 대안 구조 방어
+                if not t_rows and 'table' in table_item:
+                    t_rows = table_item.get('table', [])
+                    
+                if isinstance(t_rows, list):
+                    for row in t_rows:
+                        # row가 딕셔너리 형태일 때만 안전하게 데이터 추출
+                        if isinstance(row, dict):
+                            t_name = row.get('name')
+                            if t_name:
+                                team_stats[t_name] = {
+                                    'rank': row.get('idx') or row.get('rank', 0),
+                                    'pts': row.get('pts') or row.get('points', 0)
+                                }
 
     processed_rows = []
-    # 내정된 경기일정 섹션 확보
-    matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
+    matches = []
+    if isinstance(fixtures_data, dict):
+        matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
     
-    if not matches:
-        print("⚠️ 가동할 예정 경기 또는 완료 경기 목록이 비어있습니다.")
+    if not isinstance(matches, list):
+        print("⚠️ 가동할 예정 경기 또는 완료 경기 목록이 비어있거나 형식이 올바르지 않습니다.")
         return []
 
     for match in matches:
+        if not isinstance(match, dict):
+            continue
+            
         match_id = match.get('id')
         status = match.get('status', {})
+        if not isinstance(status, dict):
+            status = {}
         
-        home_team = match.get('home', {}).get('name')
-        away_team = match.get('away', {}).get('name')
+        home_node = match.get('home', {})
+        away_node = match.get('away', {})
+        if not isinstance(home_node, dict): home_node = {}
+        if not isinstance(away_node, dict): away_node = {}
         
-        # 스코어 처리 (종료된 경기와 예정 경기 구분)
+        home_team = home_node.get('name')
+        away_team = away_node.get('name')
+        
+        if not home_team or not away_team:
+            continue
+        
+        # 스코어 안전 분할 처리
         is_finished = status.get('finished', False)
-        home_score = status.get('scoreStr', '0-0').split('-')[0].strip() if is_finished else ""
-        away_score = status.get('scoreStr', '0-0').split('-')[1].strip() if is_finished else ""
+        score_str = status.get('scoreStr', '0-0')
+        
+        if is_finished and '-' in score_str:
+            parts = score_str.split('-')
+            home_score = parts[0].strip() if len(parts) > 0 else ""
+            away_score = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            home_score = ""
+            away_score = ""
         
         # [고도화 변수 1] 체급 전력차 연산
         home_pts = team_stats.get(home_team, {}).get('pts', 15)
@@ -127,15 +168,14 @@ def analyze_matches(data):
         power_diff = round(float(home_pts - away_pts), 2)
         
         # [고도화 변수 2] 최근 폼 기반 인덱스 가공
-        home_form = match.get('home', {}).get('form', [])
-        away_form = match.get('away', {}).get('form', [])
+        home_form = home_node.get('form', [])
+        away_form = away_node.get('form', [])
         
         def calculate_form_score(form_list):
             score = 0.0
             if isinstance(form_list, list):
                 for idx, f in enumerate(form_list[:5]):
                     weight = 1.0 - (idx * 0.1)
-                    # FotMob 폼 데이터 객체 또는 문자열 방어 처리
                     f_str = f.get('result', '') if isinstance(f, dict) else str(f)
                     if f_str == 'W': score += 3.0 * weight
                     elif f_str == 'D': score += 1.0 * weight
