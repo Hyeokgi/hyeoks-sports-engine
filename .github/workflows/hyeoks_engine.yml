@@ -25,4 +25,6 @@ jobs:
       - name: 크롤러 및 시뮬레이션 엔진 실행
         env:
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
-        run: python crawl_and_update.py
+        run: |
+          python crawl_and_update.py
+          python predict_engine.py
