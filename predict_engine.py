@@ -7,9 +7,6 @@ from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from sklearn.ensemble import RandomForestClassifier
 
-# -------------------------------------------------------------------------
-# 💡 모델이 학습할 순수 경기력 변수 레이어
-# -------------------------------------------------------------------------
 FEATURES = [
     "전력차 지표(Elo)", 
     "공격격차 지표(득점)", 
@@ -26,7 +23,7 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 def main():
-    print("======== [HYEOKS 타이 브레이커 보정 예측 두뇌 v3.5 가동] ========")
+    print("======== [HYEOKS 타이 브레이커 보정 예측 두뇌 v3.6 가동] ========")
     sh = init_google_sheet()
     
     total_sheet = sh.worksheet("전체")
@@ -37,11 +34,9 @@ def main():
         print("❌ '전체' 탭에 학습 소스 데이터가 전무합니다.")
         return
         
-    # 데이터 정제 및 형변환
     for col in FEATURES:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
-    # 정답 셋업 (홈승: 2, 무승부: 1, 원정승: 0)
     def determine_target(row):
         h_score = str(row['홈스코어']).strip()
         a_score = str(row['원정스코어']).strip()
@@ -56,7 +51,6 @@ def main():
 
     df['target'] = df.apply(determine_target, axis=1)
     
-    # 시간 감쇠 가중치 계산 (최신 경기 가중치 부여)
     df['date_obj'] = pd.to_datetime(df['일시'], errors='coerce')
     current_date = pd.to_datetime('2026-07-28')
     df['days_ago'] = (current_date - df['date_obj']).dt.days
@@ -71,14 +65,12 @@ def main():
         print("💡 분석 대상이 되는 미래 경기가 없어 리포트를 종결합니다.")
         return
         
-    # 지수형 시간 감쇠 가중치 설정
     train_df['sample_weight'] = np.exp(-0.0005 * train_df['days_ago'].fillna(0))
     
     X_train = train_df[FEATURES]
     y_train = train_df['target'].astype(int)
     weights = train_df['sample_weight']
     
-    # 역대 경기 결과 비율 추적 및 밸런싱 가중치 주입
     model = RandomForestClassifier(
         n_estimators=200, 
         max_depth=5, 
@@ -87,7 +79,6 @@ def main():
     )
     model.fit(X_train, y_train, sample_weight=weights)
     
-    # 미래 경기 예측 확률 산출
     X_predict = predict_df[FEATURES]
     raw_probabilities = model.predict_proba(X_predict) 
     
@@ -98,23 +89,17 @@ def main():
         p_draw = raw_probabilities[idx][1] * 0.75 
         p_home = raw_probabilities[idx][2]
         
-        # 합산이 다시 100%가 되도록 재정규화
         total_p = p_away + p_draw + p_home
         prob_away = round((p_away / total_p) * 100, 1)
-        prob_draw = round((p_draw / total_p) * 100, 1)
+        prob_draw = round(((p_draw / total_p)) * 100, 1)
         prob_home = round((p_home / total_p) * 100, 1)
         
         elo_val = float(row['전력차 지표(Elo)'])
         
-        # 💡 [버그 교정 핵심] 타이 브레이커 매커니즘 작동 구역
-        # 홈승과 원정승의 확률이 소수점 첫째 자리까지 완벽히 같을 때 전력차(Elo) 필드를 추적
         if prob_home == prob_away:
-            if elo_val > 15.0:
-                pick = "홈승(▲)"      # 확률은 같으나 홈팀의 체급이 유의미하게 높을 때
-            elif elo_val < -15.0:
-                pick = "원정승(▼)"    # 확률은 같으나 원정팀의 체급이 유의미하게 높을 때
-            else:
-                pick = "무승부(■)"    # 체급 격차마저 팽팽하다면 방크용 무승부 판정
+            if elo_val > 15.0: pick = "홈승(▲)"
+            elif elo_val < -15.0: pick = "원정승(▼)"
+            else: pick = "무승부(■)"
         else:
             arr = [prob_away, prob_draw, prob_home]
             am = np.argmax(arr)
@@ -131,10 +116,8 @@ def main():
     
     report_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈승 확률", "무승부 확률", "원정승 확률", "예측 추천픽", "예측 분석시각"]
     
-    try: 
-        report_sheet = sh.worksheet("HYEOKS_예측리포트")
-    except gspread.WorksheetNotFound: 
-        report_sheet = sh.add_worksheet(title="HYEOKS_예측리포트", rows="500", cols="15")
+    try: report_sheet = sh.worksheet("HYEOKS_예측리포트")
+    except gspread.WorksheetNotFound: report_sheet = sh.add_worksheet(title="HYEOKS_예측리포트", rows="500", cols="15")
         
     report_sheet.clear()
     report_sheet.append_row(report_headers)
