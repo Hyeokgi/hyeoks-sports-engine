@@ -63,7 +63,7 @@ def fetch_fotmob_league_data(league_id, league_name):
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"
     }
     
-    print(f" 🌐 [{league_name}] 진짜 경기 데이터 블록 탐색 중...")
+    print(f" 🌐 [{league_name}] 데이터 매립 박스 정밀 탐색 중...")
     try:
         response = requests.get(url, headers=headers, timeout=12)
         if response.status_code != 200: return None
@@ -81,13 +81,15 @@ def fetch_fotmob_league_data(league_id, league_name):
             page_props = full_json.get('props', {}).get('pageProps', {})
             fallback_data = page_props.get('fallback', {})
             
-            # [버그 수정] 경기 일정, 순위표가 확실하게 들어있는 진짜 알맹이 노드만 추출
+            # 진짜 경기 데이터와 순위표 구조를 들고 있는 노드 추적 필터
             for key, value in fallback_data.items():
                 if isinstance(value, dict):
                     content = value.get('content', {})
                     if isinstance(content, dict) and ('fixtures' in content or 'table' in content or 'matches' in content):
+                        print(f"   🎉 [{league_name}] 데이터 매칭 성공!")
                         return value
                     if 'fixtures' in value or 'table' in value or 'matches' in value:
+                        print(f"   🎉 [{league_name}] 데이터 매칭 성공!")
                         return value
             if 'data' in page_props: return page_props['data']
             return page_props
@@ -116,7 +118,6 @@ def analyze_league_matches(data, league_name):
     
     # [A] 구역: 3원 교차 순위표 구조 다각도 분해 및 계산
     tables_dict = {'all': [], 'home': [], 'away': []}
-    table_rows = []
     
     if isinstance(table_data_root, list) and len(table_data_root) > 0:
         for t_item in table_data_root:
@@ -198,7 +199,7 @@ def analyze_league_matches(data, league_name):
             form_str, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
 
-    # [B] 구역: 선수 숨은 지표 추출
+    # [B] 구역: 선수 세부 스탯 지표 추출
     player_rows = []
     p_stats = content.get('stats', {}).get('players', []) if isinstance(content.get('stats'), dict) else []
     if isinstance(p_stats, list):
@@ -215,7 +216,7 @@ def analyze_league_matches(data, league_name):
                                 league_name, str(p_rank), stat_name, str(p.get('value', '-')), datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             ])
 
-    # [C] 구역: 경기 일정 파싱 및 안전 가공 (축약 문법 버그 제거)
+    # [C] 구역: 경기 일정 파싱 및 지표 연산
     matches = []
     if isinstance(data, dict):
         c_node = data.get('content', {})
@@ -319,7 +320,7 @@ def analyze_league_matches(data, league_name):
         def get_recent_avg(history): return round(sum(history[-5:]) / len(history[-5:]), 2) if history else 0.0
         def get_clean_sheet_count(history): return history[-5:].count(1) if history else 0
 
-        # [오타 수정] 변수 선언 이름과 하단 시트 매핑 이름 일치 작업 완료
+        # [오타 수정 완료] 하단 시트 매핑 변수명 일치
         attack_trend = round(get_recent_avg(team_goals_scored.get(home)) - get_recent_avg(team_goals_scored.get(away)), 2)
         defense_trend = round(get_recent_avg(team_goals_conceded.get(home)) - get_recent_avg(team_goals_conceded.get(away)), 2)
         sheet_trend = get_clean_sheet_count(team_clean_sheets.get(home)) - get_clean_sheet_count(team_clean_sheets.get(away))
@@ -334,7 +335,7 @@ def analyze_league_matches(data, league_name):
             S_h = 1.0 if hs > as_ else (0.5 if hs == as_ else 0.0)
             E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - home_elo) / 400.0))
             K = 40 if league_name in ["챔피언스리그", "유로파리그"] else 32
-            elo_dict[home] += K * (S_h - E_h); elo_dict[away] += K * ((1.0 - S_h) - (1.0 - Eh))
+            elo_dict[home] += K * (S_h - E_h); elo_dict[away] += K * ((1.0 - S_h) - (1.0 - E_h))
 
         league_rows.append([
             str(m['id']), str(m['date']), league_name, home, away,
@@ -353,10 +354,10 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     if rows: worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 5. 메인 컨트롤 오케스트레이션 (바인딩 조건 수정)
+# 5. 메인 컨트롤 오케스트레이션
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 멀티 매트릭스 통합 엔진 v4.1 완전 보수판 가동] ========")
+    print("======== [HYEOKS 멀티 매트릭스 통합 엔진 v4.5 Pro 가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
         "54": "분데스리가", "55": "세리에A", "102": "J1리그"
@@ -380,7 +381,7 @@ def main():
         raw_data = fetch_fotmob_league_data(l_id, l_name)
         if raw_data:
             m_rows, t_rows, p_rows = analyze_league_matches(raw_data, l_name)
-            # [버그 수정] 경기가 비어있어도 팀/선수 정보가 확보되었다면 누적 처리 진행
+            # 조건 방어 해제: 팀 통계나 선수 통계가 확보되었다면 파이프라인 무조건 가동
             if m_rows or t_rows or p_rows:
                 all_matches.extend(m_rows)
                 all_teams.extend(t_rows)
