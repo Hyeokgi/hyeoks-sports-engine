@@ -22,14 +22,18 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data").sheet1
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 API 크롤러
+# 2. FotMob 실시간 데이터 API 크롤러 (수정본)
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id="9116"):
     """FotMob 내부 API를 통해 리그 데이터(순위표, 경기 일정)를 가져옵니다."""
-    url = f"https://www.fotmob.com/api/leagues?id={league_id}&ccode3=KOR"
+    # leagues -> league (단수형)으로 주소 수정
+    url = f"https://www.fotmob.com/api/league?id={league_id}&ccode3=KOR"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
     }
+    
     response = requests.get(url, headers=headers)
     if response.status_code != 200:
         print(f"FotMob API 접근 실패: 상태 코드 {response.status_code}")
