@@ -342,14 +342,21 @@ def analyze_league_matches(data, league_name, baseline=None, h2h_cache=None):
         r_away = split_data.get('away', {})
         
         def calculate_metrics(node):
+            # 2026-07-28: FotMob이 순위표 필드명을 won/draw/lost/goalsFor/goalsConceded에서
+            # wins/draws/losses/scoresStr("득-실")로 바꿔서, 신구 필드명을 모두 지원한다.
             if not node: return "0", "0.0", "0승 0무 0패", "0.00", "0.00"
             p = float(node.get('played', 0))
-            w = float(node.get('won', 0))
-            d = float(node.get('draw', 0))
-            l = float(node.get('lost', 0))
-            gf = float(node.get('goalsFor', 0))
-            ga = float(node.get('goalsConceded', 0))
-            
+            w = float(node.get('won', node.get('wins', 0)) or 0)
+            d = float(node.get('draw', node.get('draws', 0)) or 0)
+            l = float(node.get('lost', node.get('losses', 0)) or 0)
+            if 'goalsFor' in node or 'goalsConceded' in node:
+                gf = float(node.get('goalsFor', 0) or 0)
+                ga = float(node.get('goalsConceded', 0) or 0)
+            else:
+                parts = str(node.get('scoresStr') or '0-0').split('-')
+                gf = float(parts[0]) if len(parts) == 2 and parts[0].strip().lstrip('-').isdigit() else 0.0
+                ga = float(parts[1]) if len(parts) == 2 and parts[1].strip().lstrip('-').isdigit() else 0.0
+
             w_rate = round((w / p) * 100, 1) if p > 0 else 0.0
             avg_gf = round(gf / p, 2) if p > 0 else 0.0
             avg_ga = round(ga / p, 2) if p > 0 else 0.0
