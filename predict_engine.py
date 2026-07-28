@@ -8,7 +8,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from sklearn.ensemble import RandomForestClassifier
 
 # -------------------------------------------------------------------------
-# 💡 모델이 학습할 순수 경기력 변수 레이어 (오염 변수 제거)
+# 💡 모델이 학습할 순수 경기력 변수 레이어
 # -------------------------------------------------------------------------
 FEATURES = [
     "전력차 지표(Elo)", 
@@ -26,7 +26,7 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 def main():
-    print("======== [HYEOKS 머신러닝 통계 가중치 엔진 v2.5 가동] ========")
+    print("======== [HYEOKS 타이 브레이커 보정 예측 두뇌 v3.5 가동] ========")
     sh = init_google_sheet()
     
     total_sheet = sh.worksheet("전체")
@@ -78,40 +78,47 @@ def main():
     y_train = train_df['target'].astype(int)
     weights = train_df['sample_weight']
     
-    # 💡 [고도화 핵심 1] 역대 경기 결과 비율 추적 및 밸런싱 가중치 주입
-    # 무승부 빈도가 승/패에 비해 과도하게 튀지 않도록 모델 내부에 디스트리뷰션 페널티 부여
+    # 역대 경기 결과 비율 추적 및 밸런싱 가중치 주입
     model = RandomForestClassifier(
         n_estimators=200, 
         max_depth=5, 
-        class_weight="balanced_subsample", # 역사적 클래스 비율 불균형 자동 교정
+        class_weight="balanced_subsample", 
         random_state=42
     )
     model.fit(X_train, y_train, sample_weight=weights)
     
     # 미래 경기 예측 확률 산출
     X_predict = predict_df[FEATURES]
-    raw_probabilities = model.predict_proba(X_predict) # [원정승, 무승부, 홈승]
+    raw_probabilities = model.predict_proba(X_predict) 
     
-    # 💡 [고도화 핵심 2] 수학적 확률 캘리브레이션 (Probability Calibration)
-    # 14경기 중 무승부가 1~4경기(평균 2.5경기) 내외로 발생하는 뱃맨 토토 특성을 반영하기 위한 보정
-    # 무승부 확률 축에 감쇠 인자($\gamma = 0.75$)를 적용하여 대중적 쏠림 방어 후 Softmax 정규화 진행
     calibrated_results = []
     
     for idx, (_, row) in enumerate(predict_df.iterrows()):
         p_away = raw_probabilities[idx][0]
-        p_draw = raw_probabilities[idx][1] * 0.75 # 무승부 하이재킹 오버쇼팅 차단 가중치
+        p_draw = raw_probabilities[idx][1] * 0.75 
         p_home = raw_probabilities[idx][2]
         
-        # 합산이 다시 100%가 되도록 재정규화(Re-normalization) 수식 적용
+        # 합산이 다시 100%가 되도록 재정규화
         total_p = p_away + p_draw + p_home
         prob_away = round((p_away / total_p) * 100, 1)
         prob_draw = round((p_draw / total_p) * 100, 1)
         prob_home = round((p_home / total_p) * 100, 1)
         
-        # 보정된 확률 기반 최종 추천 픽 산출
-        arr = [prob_away, prob_draw, prob_home]
-        am = np.argmax(arr)
-        pick = "원정승(▼)" if am == 0 else ("무승부(■)" if am == 1 else "홈승(▲)")
+        elo_val = float(row['전력차 지표(Elo)'])
+        
+        # 💡 [버그 교정 핵심] 타이 브레이커 매커니즘 작동 구역
+        # 홈승과 원정승의 확률이 소수점 첫째 자리까지 완벽히 같을 때 전력차(Elo) 필드를 추적
+        if prob_home == prob_away:
+            if elo_val > 15.0:
+                pick = "홈승(▲)"      # 확률은 같으나 홈팀의 체급이 유의미하게 높을 때
+            elif elo_val < -15.0:
+                pick = "원정승(▼)"    # 확률은 같으나 원정팀의 체급이 유의미하게 높을 때
+            else:
+                pick = "무승부(■)"    # 체급 격차마저 팽팽하다면 방크용 무승부 판정
+        else:
+            arr = [prob_away, prob_draw, prob_home]
+            am = np.argmax(arr)
+            pick = "원정승(▼)" if am == 0 else ("무승부(■)" if am == 1 else "홈승(▲)")
         
         prediction_results_row = [
             str(row['경기ID']), str(row['일시']), str(row['리그']), str(row['홈팀']), str(row['원정팀']),
@@ -124,14 +131,16 @@ def main():
     
     report_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈승 확률", "무승부 확률", "원정승 확률", "예측 추천픽", "예측 분석시각"]
     
-    try: report_sheet = sh.worksheet("HYEOKS_예측리포트")
-    except gspread.WorksheetNotFound: report_sheet = sh.add_worksheet(title="HYEOKS_예측리포트", rows="500", cols="15")
+    try: 
+        report_sheet = sh.worksheet("HYEOKS_예측리포트")
+    except gspread.WorksheetNotFound: 
+        report_sheet = sh.add_worksheet(title="HYEOKS_예측리포트", rows="500", cols="15")
         
     report_sheet.clear()
     report_sheet.append_row(report_headers)
     report_sheet.append_rows(calibrated_results)
     
-    print(f" 🎉 [대성공] 14경기 중 1~4경기 발생 규칙 기반 캘리브레이션 완료! 'HYEOKS_예측리포트' 동기화 성공.")
+    print(f" 🎉 [대성공] 타이 브레이커 밸런싱 교정 완료! 'HYEOKS_예측리포트' 동기화 성공.")
 
 if __name__ == "__main__":
     main()
