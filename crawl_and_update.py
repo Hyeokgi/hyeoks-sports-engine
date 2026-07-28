@@ -77,56 +77,105 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (v2.9 프리시즌 서열 승계 버전)
+# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (리스트/딕셔너리 다중 구조 완벽 대응)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
-    if not data or not isinstance(data, dict): return []
-    content = data.get('content', data) if isinstance(data, dict) else {}
-    fixtures_data = content.get('fixtures', {})
-    table_data_root = content.get('table', [])
+    if not data: return []
     
+    # [방어 패치 1] 순위표(Table) 데이터 다각도 정밀 안전 추출
     team_stats = {}
     valid_league_teams = set()
     max_pts_in_league = 0
     total_teams_count = 0
+    table_rows = []
     
-    if isinstance(table_data_root, list) and len(table_data_root) > 0:
-        table_rows = []
-        t_data = table_data_root[0].get('data', {})
-        if isinstance(t_data, dict):
-            table_rows = t_data.get('table', [])
-        if not table_rows and 'table' in table_data_root[0]:
-            table_rows = table_data_root[0].get('table', [])
+    if isinstance(data, dict):
+        c_node = data.get('content', {})
+        t_node = c_node.get('table', []) if isinstance(c_node, dict) else data.get('table', [])
+        
+        if isinstance(t_node, list) and len(t_node) > 0:
+            first_item = t_node[0]
+            if isinstance(first_item, dict):
+                t_data = first_item.get('data', {})
+                if isinstance(t_data, dict):
+                    table_rows = t_data.get('table', [])
+                if not table_rows:
+                    table_rows = first_item.get('table', [])
+        elif isinstance(t_node, dict):
+            table_rows = t_node.get('table', [])
             
-        if isinstance(table_rows, list):
-            total_teams_count = len(table_rows)
-            for row in table_rows:
-                if isinstance(row, dict) and row.get('name'):
-                    t_name = row.get('name')
-                    valid_league_teams.add(t_name)
-                    pts = row.get('pts') or row.get('points', 0)
-                    if pts > max_pts_in_league:
-                        max_pts_in_league = pts
-                    team_stats[t_name] = {
-                        'rank': row.get('idx') or row.get('rank', 1),
-                        'pts': pts
-                    }
+    if isinstance(table_rows, list):
+        table_rows = [r for r in table_rows if isinstance(r, dict)]
+        total_teams_count = len(table_rows)
+        for row in table_rows:
+            t_name = row.get('name')
+            if t_name:
+                valid_league_teams.add(t_name)
+                pts = row.get('pts') or row.get('points', 0)
+                try: pts = float(pts)
+                except: pts = 0.0
+                if pts > max_pts_in_league:
+                    max_pts_in_league = pts
+                team_stats[t_name] = {
+                    'rank': row.get('idx') or row.get('rank', 1),
+                    'pts': pts
+                }
 
-    matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
-    if not matches and 'matches' in content:
-        matches = content.get('matches', {}).get('allMatches', [])
+    # [방어 패치 2] 에러의 주원인이었던 경기 데이터(Matches) 유연한 탐색 엔진 가동
+    matches = []
+    if isinstance(data, dict):
+        c_node = data.get('content', {})
+        
+        # 탐색 대상 후보 노드들을 순서대로 리스트화
+        search_nodes = []
+        if isinstance(c_node, dict):
+            search_nodes.append(c_node)
+        search_nodes.append(data)
+        
+        for node in search_nodes:
+            if not isinstance(node, dict): continue
             
-    if not isinstance(matches, list) or not matches: return []
+            # 1순위: fixtures 탐색
+            fix = node.get('fixtures', {})
+            if isinstance(fix, dict):
+                am = fix.get('allMatches', fix.get('fixtures', []))
+                if isinstance(am, list) and len(am) > 0:
+                    matches = am
+                    break
+            elif isinstance(fix, list) and len(fix) > 0:
+                matches = fix
+                break
+                
+            # 2순위: matches 탐색
+            mat = node.get('matches', {})
+            if isinstance(mat, dict):
+                am = mat.get('allMatches', mat.get('matches', []))
+                if isinstance(am, list) and len(am) > 0:
+                    matches = am
+                    break
+            elif isinstance(mat, list) and len(mat) > 0:
+                matches = mat
+                break
+    elif isinstance(data, list):
+        matches = data
 
+    if not isinstance(matches, list) or not matches:
+        return []
+
+    # 안전하게 딕셔너리 형태의 경기 리포트만 필터링
+    matches = [m for m in matches if isinstance(m, dict)]
+    
     raw_parsed_matches = []
     today = datetime.now()
     max_future_date = today + timedelta(days=60)
     
     for match in matches:
-        if not isinstance(match, dict): continue
         status = match.get('status', {}) if isinstance(match.get('status'), dict) else {}
-        home_team = match.get('home', {}).get('name')
-        away_team = match.get('away', {}).get('name')
+        home_node = match.get('home', {}) if isinstance(match.get('home'), dict) else {}
+        away_node = match.get('away', {}) if isinstance(match.get('away'), dict) else {}
+        
+        home_team = home_node.get('name')
+        away_team = away_node.get('name')
         
         if not home_team or not away_team: continue
         if valid_league_teams and (home_team not in valid_league_teams or away_team not in valid_league_teams):
@@ -158,20 +207,17 @@ def analyze_league_matches(data, league_name):
     if not raw_parsed_matches: return []
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
     
-    # 💡 [프리시즌 하이재킹 패치] 리그의 최대 승점이 0점(개막 전)인 경우, 초기 서열(idx)을 기반으로 체급 분배
+    # Elo 사전 서열 지급 세팅
     elo_dict = {}
     is_preseason = (max_pts_in_league == 0 and total_teams_count > 0)
     
     for team in valid_league_teams:
         if is_preseason:
-            # 1위 팀은 1620점 근처, 꼴찌 팀은 1380점 근처로 서열 상속 연산
             rank = team_stats[team]['rank']
             rank_factor = (total_teams_count - rank) / (total_teams_count - 1) if total_teams_count > 1 else 0.5
             elo_dict[team] = 1380.0 + (rank_factor * 240.0)
         else:
-            # 기존 시즌 중일 때는 승점 비례 보너스 지급
-            pts_bonus = team_stats.get(team, {}).get('pts', 0) * 3.0
-            elo_dict[team] = 1500.0 + pts_bonus
+            elo_dict[team] = 1500.0 + (team_stats.get(team, {}).get('pts', 0) * 3.0)
 
     for m in raw_parsed_matches:
         if m['home'] not in elo_dict: elo_dict[m['home']] = 1500.0
@@ -234,10 +280,10 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     if rows: worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 5. 메인 실행 컨트롤러
+# 4. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v2.9 프리시즌 서열 승계 버전 가동] ========")
+    print("======== [HYEOKS 글로벌 엔진 v2.90 최종 보수 버전 가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
         "54": "분데스리가", "55": "세리에A", "102": "J1리그", 
@@ -278,7 +324,7 @@ def main():
             rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] 유럽 프리시즌 공백 돌파! 지난 시즌 성적 기반 전력차 완벽 복구 완료!")
+    print(" 🎉 [대성공] 리스트 객체 충돌 에러 완전 해결! 파이프라인 정상 가동 완료!")
 
 if __name__ == "__main__":
     main()
