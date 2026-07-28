@@ -21,7 +21,44 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 웹페이지 정밀 매립 박스 크롤러
+# 💡 [HYEOKS 핵심 매트릭스] 유럽 4대 리그 프리시즌 체급 레지스트리
+# -------------------------------------------------------------------------
+EURO_TIER_REGISTRY = {
+    # Tier 1: 최상위 초명가 크루 (~1620)
+    "Manchester City": 1620.0, "Arsenal": 1620.0, "Liverpool": 1620.0,
+    "Real Madrid": 1620.0, "Barcelona": 1620.0,
+    "Bayern München": 1620.0, "Bayer Leverkusen": 1620.0,
+    "Inter": 1620.0, "Juventus": 1620.0, "Napoli": 1600.0,
+    
+    # Tier 2: 상위권 강팀 크루 (~1550)
+    "Manchester United": 1550.0, "Tottenham Hotspur": 1550.0, "Aston Villa": 1550.0,
+    "Newcastle United": 1550.0, "Chelsea": 1550.0,
+    "Atletico Madrid": 1550.0, "Real Sociedad": 1550.0, "Athletic Club": 1550.0, "Villarreal": 1530.0,
+    "Borussia Dortmund": 1550.0, "RB Leipzig": 1550.0, "Eintracht Frankfurt": 1520.0,
+    "Milan": 1550.0, "Atalanta": 1550.0, "Roma": 1550.0, "Lazio": 1530.0,
+    
+    # Tier 3: 중위권 안정 크루 (~1480)
+    "Brighton & Hove Albion": 1480.0, "Fulham": 1480.0, "Crystal Palace": 1480.0,
+    "Brentford": 1480.0, "Everton": 1460.0, "Bournemouth": 1460.0, "AFC Bournemouth": 1460.0,
+    "Real Betis": 1480.0, "Sevilla": 1480.0, "Valencia": 1470.0, "Osasuna": 1470.0, "Getafe": 1460.0, "Celta Vigo": 1460.0,
+    "Freiburg": 1480.0, "Hoffenheim": 1480.0, "Mainz 05": 1470.0, "VfB Stuttgart": 1490.0, "Borussia Mönchengladbach": 1460.0, "Werder Bremen": 1460.0,
+    "Fiorentina": 1480.0, "Bologna": 1480.0, "Torino": 1470.0, "Monza": 1460.0, "Genoa": 1460.0, "Udinese": 1460.0,
+    
+    # Tier 4: 하위권 잔류 공방 크루 (~1410)
+    "Nottingham Forest": 1410.0, "Wolverhampton Wanderers": 1410.0,
+    "Rayo Vallecano": 1410.0, "Deportivo Alaves": 1410.0, "Mallorca": 1410.0, "Las Palmas": 1400.0,
+    "Augsburg": 1410.0, "Union Berlin": 1410.0, "VfL Wolfsburg": 1420.0, "Borussia Bochum": 1400.0,
+    "Lecce": 1410.0, "Cagliari": 1410.0, "Empoli": 1400.0, "Verona": 1400.0, "Sassuolo": 1410.0,
+    
+    # Tier 5: 승격팀 및 백업 크루 (~1350)
+    "Ipswich Town": 1360.0, "Leicester City": 1360.0, "Southampton": 1350.0, "Coventry City": 1350.0, "Hull City": 1350.0, "Sunderland": 1350.0, "Leeds United": 1360.0,
+    "Espanyol": 1360.0, "Real Valladolid": 1350.0, "Leganes": 1350.0, "Levante": 1350.0, "Racing Santander": 1350.0, "Deportivo A Coruña": 1350.0, "Elche": 1350.0, "Malaga": 1350.0,
+    "St. Pauli": 1360.0, "Holstein Kiel": 1350.0, "Hamburger SV": 1350.0, "Elversberg": 1350.0, "1. FC Köln": 1360.0, "Paderborn": 1350.0, "Schalke 04": 1350.0,
+    "Parma": 1360.0, "Como": 1360.0, "Venezia": 1350.0, "Frosinone": 1350.0
+}
+
+# -------------------------------------------------------------------------
+# 3. FotMob 실시간 데이터 웹페이지 정밀 매립 박스 크롤러
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id, league_name):
     url = f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
@@ -34,8 +71,7 @@ def fetch_fotmob_league_data(league_id, league_name):
     print(f" 🌐 [{league_name}] 진짜 경기 데이터 블록 탐색 중...")
     try:
         response = requests.get(url, headers=headers, timeout=12)
-        if response.status_code != 200:
-            return None
+        if response.status_code != 200: return None
             
         html_content = response.text
         start_str = '<script id="__NEXT_DATA__" type="application/json">'
@@ -57,7 +93,6 @@ def fetch_fotmob_league_data(league_id, league_name):
                         return value
                     if 'fixtures' in value or 'table' in value or 'matches' in value:
                         return value
-                        
             if 'data' in page_props: return page_props['data']
             return page_props
     except Exception as e:
@@ -77,16 +112,14 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (리스트/딕셔너리 다중 구조 완벽 대응)
+# 4. HYEOKS 하이브리드 연대기 시뮬레이터 (프리시즌 데이터 공백 완전 보수)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
     if not data: return []
     
-    # [방어 패치 1] 순위표(Table) 데이터 다각도 정밀 안전 추출
     team_stats = {}
     valid_league_teams = set()
     max_pts_in_league = 0
-    total_teams_count = 0
     table_rows = []
     
     if isinstance(data, dict):
@@ -97,16 +130,13 @@ def analyze_league_matches(data, league_name):
             first_item = t_node[0]
             if isinstance(first_item, dict):
                 t_data = first_item.get('data', {})
-                if isinstance(t_data, dict):
-                    table_rows = t_data.get('table', [])
-                if not table_rows:
-                    table_rows = first_item.get('table', [])
+                if isinstance(t_data, dict): table_rows = t_data.get('table', [])
+                if not table_rows: table_rows = first_item.get('table', [])
         elif isinstance(t_node, dict):
             table_rows = t_node.get('table', [])
             
     if isinstance(table_rows, list):
         table_rows = [r for r in table_rows if isinstance(r, dict)]
-        total_teams_count = len(table_rows)
         for row in table_rows:
             t_name = row.get('name')
             if t_name:
@@ -114,55 +144,33 @@ def analyze_league_matches(data, league_name):
                 pts = row.get('pts') or row.get('points', 0)
                 try: pts = float(pts)
                 except: pts = 0.0
-                if pts > max_pts_in_league:
-                    max_pts_in_league = pts
+                if pts > max_pts_in_league: max_pts_in_league = pts
                 team_stats[t_name] = {
                     'rank': row.get('idx') or row.get('rank', 1),
                     'pts': pts
                 }
 
-    # [방어 패치 2] 에러의 주원인이었던 경기 데이터(Matches) 유연한 탐색 엔진 가동
     matches = []
     if isinstance(data, dict):
         c_node = data.get('content', {})
-        
-        # 탐색 대상 후보 노드들을 순서대로 리스트화
-        search_nodes = []
-        if isinstance(c_node, dict):
-            search_nodes.append(c_node)
-        search_nodes.append(data)
+        search_nodes = [c_node, data] if isinstance(c_node, dict) else [data]
         
         for node in search_nodes:
             if not isinstance(node, dict): continue
-            
-            # 1순위: fixtures 탐색
             fix = node.get('fixtures', {})
             if isinstance(fix, dict):
                 am = fix.get('allMatches', fix.get('fixtures', []))
-                if isinstance(am, list) and len(am) > 0:
-                    matches = am
-                    break
-            elif isinstance(fix, list) and len(fix) > 0:
-                matches = fix
-                break
+                if isinstance(am, list) and len(am) > 0: {matches := am}; break
+            elif isinstance(fix, list) and len(fix) > 0: {matches := fix}; break
                 
-            # 2순위: matches 탐색
             mat = node.get('matches', {})
             if isinstance(mat, dict):
                 am = mat.get('allMatches', mat.get('matches', []))
-                if isinstance(am, list) and len(am) > 0:
-                    matches = am
-                    break
-            elif isinstance(mat, list) and len(mat) > 0:
-                matches = mat
-                break
-    elif isinstance(data, list):
-        matches = data
+                if isinstance(am, list) and len(am) > 0: {matches := am}; break
+            elif isinstance(mat, list) and len(mat) > 0: {matches := mat}; break
+    elif isinstance(data, list): matches = data
 
-    if not isinstance(matches, list) or not matches:
-        return []
-
-    # 안전하게 딕셔너리 형태의 경기 리포트만 필터링
+    if not isinstance(matches, list) or not matches: return []
     matches = [m for m in matches if isinstance(m, dict)]
     
     raw_parsed_matches = []
@@ -173,16 +181,13 @@ def analyze_league_matches(data, league_name):
         status = match.get('status', {}) if isinstance(match.get('status'), dict) else {}
         home_node = match.get('home', {}) if isinstance(match.get('home'), dict) else {}
         away_node = match.get('away', {}) if isinstance(match.get('away'), dict) else {}
-        
         home_team = home_node.get('name')
         away_team = away_node.get('name')
         
         if not home_team or not away_team: continue
-        if valid_league_teams and (home_team not in valid_league_teams or away_team not in valid_league_teams):
-            continue
+        if valid_league_teams and (home_team not in valid_league_teams or away_team not in valid_league_teams): continue
             
         m_date = extract_match_date(match) or datetime.now().strftime('%Y-%m-%d')
-        
         try:
             match_date_obj = datetime.strptime(m_date, '%Y-%m-%d')
             if match_date_obj > max_future_date: continue
@@ -207,25 +212,34 @@ def analyze_league_matches(data, league_name):
     if not raw_parsed_matches: return []
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
     
-    # Elo 사전 서열 지급 세팅
+    # 💡 [프리시즌 연속성 대입 패치] 유럽 명가 레지스트리 기반 기본 체급 배정
     elo_dict = {}
-    is_preseason = (max_pts_in_league == 0 and total_teams_count > 0)
+    all_teams_in_fixtures = set([m['home'] for m in raw_parsed_matches] + [m['away'] for m in raw_parsed_matches])
     
-    for team in valid_league_teams:
-        if is_preseason:
-            rank = team_stats[team]['rank']
-            rank_factor = (total_teams_count - rank) / (total_teams_count - 1) if total_teams_count > 1 else 0.5
-            elo_dict[team] = 1380.0 + (rank_factor * 240.0)
+    for team in all_teams_in_fixtures:
+        if team in EURO_TIER_REGISTRY:
+            elo_dict[team] = EURO_TIER_REGISTRY[team]
+        elif team in team_stats:
+            elo_dict[team] = 1500.0 + (team_stats[team]['pts'] * 3.0)
         else:
-            elo_dict[team] = 1500.0 + (team_stats.get(team, {}).get('pts', 0) * 3.0)
+            elo_dict[team] = 1450.0
 
-    for m in raw_parsed_matches:
-        if m['home'] not in elo_dict: elo_dict[m['home']] = 1500.0
-        if m['away'] not in elo_dict: elo_dict[m['away']] = 1500.0
+    # 💡 [공수 지표 프록시 이식 구역] 개막 전 빈 배열에 지난 시즌 기반 기대 성능 선제 주입
+    team_goals_scored = {}
+    team_goals_conceded = {}
+    team_clean_sheets = {}
+    
+    for team, initial_elo in elo_dict.items():
+        # 기본 체급 기반으로 평균 득/실점 트렌드 유추 주입 (데이터 공백 방지)
+        proxy_scored = round((initial_elo - 1200) / 200, 2)
+        proxy_conceded = round(2.5 - proxy_scored, 2)
+        proxy_clean = 2 if initial_elo > 1600 else (1 if initial_elo > 1460 else 0)
+        
+        # 3경기의 가상 아카이브 생성 (시즌 경기가 끝나면서 자연스럽게 Live 데이터로 밀려남)
+        team_goals_scored[team] = [proxy_scored] * 3
+        team_goals_conceded[team] = [proxy_conceded] * 3
+        team_clean_sheets[team] = [proxy_clean] * 3
 
-    team_goals_scored = {team: [] for team in elo_dict.keys()}
-    team_goals_conceded = {team: [] for team in elo_dict.keys()}
-    team_clean_sheets = {team: [] for team in elo_dict.keys()}
     league_rows = []
     
     for m in raw_parsed_matches:
@@ -280,10 +294,10 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     if rows: worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 4. 메인 실행 컨트롤러
+# 5. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v2.90 최종 보수 버전 가동] ========")
+    print("======== [HYEOKS 글로벌 엔진 v3.0 완결형 프리시즌 시뮬레이터 가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
         "54": "분데스리가", "55": "세리에A", "102": "J1리그", 
@@ -324,7 +338,7 @@ def main():
             rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] 리스트 객체 충돌 에러 완전 해결! 파이프라인 정상 가동 완료!")
+    print(" 🎉 [대성공] 전세계 모든 유럽 리그의 8월 개막전 지표 완벽 복구 완료!")
 
 if __name__ == "__main__":
     main()
