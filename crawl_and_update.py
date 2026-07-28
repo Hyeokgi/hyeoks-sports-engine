@@ -35,7 +35,6 @@ def fetch_fotmob_league_data(league_id, league_name):
     try:
         response = requests.get(url, headers=headers, timeout=12)
         if response.status_code != 200:
-            print(f"  ❌ 접근 실패 (상태 코드: {response.status_code})")
             return None
             
         html_content = response.text
@@ -55,12 +54,7 @@ def fetch_fotmob_league_data(league_id, league_name):
                 if isinstance(value, dict):
                     content = value.get('content', {})
                     if isinstance(content, dict) and ('fixtures' in content or 'table' in content or 'matches' in content):
-                        print(f"  🎉 [{league_name}] 핵심 데이터 블록 매칭 성공!")
                         return value
-                    if 'fixtures' in value or 'table' in value or 'matches' in value:
-                        print(f"  🎉 [{league_name}] 핵심 데이터 블록 매칭 성공!")
-                        return value
-                        
             if 'data' in page_props: return page_props['data']
             return page_props
     except Exception as e:
@@ -80,48 +74,66 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (2달 미래 필터 포함)
+# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (순위표 Elo 초기화 반영)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
     if not data or not isinstance(data, dict): return []
     content = data.get('content', data) if isinstance(data, dict) else {}
     fixtures_data = content.get('fixtures', {})
+    table_data_root = content.get('table', [])
     
+    # 1. 순위표(Table) 데이터 파싱하여 팀 목록 및 기본 체급 베이스라인 추출
+    team_stats = {}
+    valid_league_teams = set()
+    
+    if isinstance(table_data_root, list) and len(table_data_root) > 0:
+        table_rows = []
+        # 일반 리그 테이블 구조 방어
+        t_data = table_data_root[0].get('data', {})
+        if isinstance(t_data, dict):
+            table_rows = t_data.get('table', [])
+        if not table_rows and 'table' in table_data_root[0]:
+            table_rows = table_data_root[0].get('table', [])
+            
+        if isinstance(table_rows, list):
+            for row in table_rows:
+                if isinstance(row, dict) and row.get('name'):
+                    t_name = row.get('name')
+                    valid_league_teams.add(t_name)
+                    team_stats[t_name] = {
+                        'rank': row.get('idx') or row.get('rank', 1),
+                        'pts': row.get('pts') or row.get('points', 0)
+                    }
+
     matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
     if not matches and 'matches' in content:
-        matches = content.get('matches', {})
-        if isinstance(matches, dict):
-            matches = matches.get('allMatches', [])
+        matches = content.get('matches', {}).get('allMatches', [])
             
     if not isinstance(matches, list) or not matches: return []
 
     raw_parsed_matches = []
-    unique_teams = set()
-    
-    # 2달 이후 일정을 걸러내기 위한 기준 기준일 연산 (오늘 + 60일)
     today = datetime.now()
     max_future_date = today + timedelta(days=60)
     
     for match in matches:
         if not isinstance(match, dict): continue
-        match_id = match.get('id')
         status = match.get('status', {}) if isinstance(match.get('status'), dict) else {}
         home_team = match.get('home', {}).get('name')
         away_team = match.get('away', {}).get('name')
+        
         if not home_team or not away_team: continue
         
+        # [철벽 방어 패치] 순위표에 존재하지 않는 타 리그 유령 팀 난입 차단
+        if valid_league_teams and (home_team not in valid_league_teams or away_team not in valid_league_teams):
+            continue
+            
         m_date = extract_match_date(match) or datetime.now().strftime('%Y-%m-%d')
         
-        # 💡 [필터 패치] 현재 일 기준으로 2달(60일) 이후의 먼 미래 경기는 수집에서 제외
         try:
             match_date_obj = datetime.strptime(m_date, '%Y-%m-%d')
-            if match_date_obj > max_future_date:
-                continue # 시트에 적재하지 않고 다음 경기로 패스
-        except:
-            pass
+            if match_date_obj > max_future_date: continue
+        except: pass
             
-        unique_teams.add(home_team)
-        unique_teams.add(away_team)
         is_finished = status.get('finished', False)
         score_str = status.get('scoreStr', '')
         
@@ -134,15 +146,28 @@ def analyze_league_matches(data, league_name):
             except: is_finished = False
                 
         raw_parsed_matches.append({
-            'id': match_id, 'date': m_date, 'home': home_team, 'away': away_team,
+            'id': match.get('id'), 'date': m_date, 'home': home_team, 'away': away_team,
             'finished': is_finished, 'home_score': home_score, 'away_score': away_score
         })
 
+    if not raw_parsed_matches: return []
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
-    elo_dict = {team: 1500.0 for team in unique_teams}
-    team_goals_scored = {team: [] for team in unique_teams}
-    team_goals_conceded = {team: [] for team in unique_teams}
-    team_clean_sheets = {team: [] for team in unique_teams}
+    
+    # 💡 [콜드스타트 해결 핵심 패치] 순위표 기반 초기 Elo 차등 지급 (Base Elo)
+    elo_dict = {}
+    for team in valid_league_teams:
+        # 승점(pts) 1점당 3점의 Elo 보너스를 지급하여 초기 체급 차별화
+        pts_bonus = team_stats.get(team, {}).get('pts', 0) * 3.0
+        elo_dict[team] = 1500.0 + pts_bonus
+
+    # 만약 순위표 데이터가 없는 특수 대회의 경우 기존 1500점 기본값 세팅
+    for m in raw_parsed_matches:
+        if m['home'] not in elo_dict: elo_dict[m['home']] = 1500.0
+        if m['away'] not in elo_dict: elo_dict[m['away']] = 1500.0
+
+    team_goals_scored = {team: [] for team in elo_dict.keys()}
+    team_goals_conceded = {team: [] for team in elo_dict.keys()}
+    team_clean_sheets = {team: [] for team in elo_dict.keys()}
     league_rows = []
     
     for m in raw_parsed_matches:
@@ -187,28 +212,23 @@ def analyze_league_matches(data, league_name):
         
     return league_rows
 
-# -------------------------------------------------------------------------
-# 4. 탭 분할 제어 헬퍼
-# -------------------------------------------------------------------------
 def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     try:
         worksheet = spreadsheet.worksheet(sheet_title)
     except gspread.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title=sheet_title, rows="1500", cols="20")
-    
     worksheet.clear()
     worksheet.append_row(headers)
-    if rows:
-        worksheet.append_rows(rows)
+    if rows: worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 5. 메인 실행 컨트롤러
+# 4. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v2.7 미래 일정 필터 버전 가동] ========")
+    print("======== [HYEOKS 글로벌 엔진 v2.8 콜드스타트 완벽 패치 가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
-        "54": "분데스rika", "55": "세리에A", "102": "J1리그", 
+        "54": "분데스리가", "55": "세리에A", "102": "J1리그", 
         "42": "챔피언스리그", "73": "유로파리그", "77": "월드컵", "132": "남축INTL"
     }
     
@@ -229,14 +249,14 @@ def main():
             if league_results:
                 all_combined_rows.extend(league_results)
                 league_separated_data[l_name] = league_results
-                print(f"  -> {l_name} 연산 완료 (2달 이내 데이터 {len(league_results)}건)")
+                print(f"  -> {l_name} 연산 완료 (데이터 {len(league_results)}건)")
         time.sleep(1.0)
         
     if not all_combined_rows:
-        print("❌ 2달 이내에 해당하는 경기 데이터가 없어 시트를 업데이트하지 못했습니다.")
+        print("❌ 동기화할 경기 데이터가 없습니다.")
         return
 
-    print("\n[구글시트] '전체' 통합 탭 동기화 중 (최신일자 상단 정렬)...")
+    print("\n[구글시트] '전체' 통합 탭 동기화 중...")
     all_combined_rows.sort(key=lambda x: (x[1], x[0]), reverse=True)
     update_worksheet_safely(sh, "전체", headers, all_combined_rows)
     
@@ -246,7 +266,7 @@ def main():
             rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] 2달 초과 미래 경기 숨김 처리 완료! 시트 가독성이 대폭 향상되었습니다.")
+    print(" 🎉 [대성공] 타 리그 난입 원천 차단 및 실시간 순위표 기반 가중치 연산 완료!")
 
 if __name__ == "__main__":
     main()
