@@ -21,7 +21,7 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 웹페이지 직공 크롤러
+# 2. FotMob 실시간 데이터 웹페이지 정밀 매립 박스 크롤러 (버그 수정 핵심 구역)
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id, league_name):
     url = f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
@@ -31,27 +31,40 @@ def fetch_fotmob_league_data(league_id, league_name):
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"
     }
     
-    print(f" 🌐 [{league_name}] 데이터 매립 박스 탐색 중...")
+    print(f" 🌐 [{league_name}] 진짜 경기 데이터 블록 탐색 중...")
     try:
         response = requests.get(url, headers=headers, timeout=12)
-        if response.status_code == 200:
-            html_content = response.text
-            start_str = '<script id="__NEXT_DATA__" type="application/json">'
-            end_str = '</script>'
+        if response.status_code != 200:
+            print(f"  ❌ 접근 실패 (상태 코드: {response.status_code})")
+            return None
             
-            if start_str in html_content:
-                start_idx = html_content.find(start_str) + len(start_str)
-                end_idx = html_content.find(end_str, start_idx)
-                json_str = html_content[start_idx:end_idx].strip()
-                
-                full_json = json.loads(json_str)
-                page_props = full_json.get('props', {}).get('pageProps', {})
-                fallback_data = page_props.get('fallback', {})
-                
-                for key, value in fallback_data.items():
-                    if "league" in key: return value
-                if 'data' in page_props: return page_props['data']
-                return page_props
+        html_content = response.text
+        start_str = '<script id="__NEXT_DATA__" type="application/json">'
+        end_str = '</script>'
+        
+        if start_str in html_content:
+            start_idx = html_content.find(start_str) + len(start_str)
+            end_idx = html_content.find(end_str, start_idx)
+            json_str = html_content[start_idx:end_idx].strip()
+            
+            full_json = json.loads(json_str)
+            page_props = full_json.get('props', {}).get('pageProps', {})
+            fallback_data = page_props.get('fallback', {})
+            
+            # [수정 패치] 단순히 'league' 문구 포함 여부가 아닌, 내부 알맹이 구조 검증
+            for key, value in fallback_data.items():
+                if isinstance(value, dict):
+                    content = value.get('content', {})
+                    # 경기 일정, 순위표, 토너먼트 매치 정보 중 하나라도 들고 있는 진짜 블록 검증
+                    if isinstance(content, dict) and ('fixtures' in content or 'table' in content or 'matches' in content):
+                        print(f"  🎉 [{league_name}] 핵심 데이터 블록 매칭 성공!")
+                        return value
+                    if 'fixtures' in value or 'table' in value or 'matches' in value:
+                        print(f"  🎉 [{league_name}] 핵심 데이터 블록 매칭 성공!")
+                        return value
+                        
+            if 'data' in page_props: return page_props['data']
+            return page_props
     except Exception as e:
         print(f"  ❌ 크롤링 중 에러 발생: {e}")
     return None
@@ -69,15 +82,20 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 연대기 시뮬레이터 (공수 지표 가공)
+# 3. HYEOKS 하이브리드 연대기 시뮬레이터
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
     if not data or not isinstance(data, dict): return []
     content = data.get('content', data) if isinstance(data, dict) else {}
     fixtures_data = content.get('fixtures', {})
+    
+    # 컵대회 및 다양한 대진표 트리 구조 방어 다각화
     matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
     if not matches and 'matches' in content:
-        matches = content.get('matches', {}).get('allMatches', [])
+        matches = content.get('matches', {})
+        if isinstance(matches, dict):
+            matches = matches.get('allMatches', [])
+            
     if not isinstance(matches, list) or not matches: return []
 
     raw_parsed_matches = []
@@ -145,7 +163,7 @@ def analyze_league_matches(data, league_name):
             
             S_h = 1.0 if h_s > a_s else (0.5 if h_s == a_s else 0.0)
             E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - home_elo) / 400.0))
-            K = 40 if league_name in ["챔피언스리그", "월드컵"] else 32
+            K = 40 if league_name in ["챔피언스리그", "유로파리그", "월드컵"] else 32
             elo_dict[home] += K * (S_h - E_h)
             elo_dict[away] += K * ((1.0 - S_h) - (1.0 - E_h))
 
@@ -160,13 +178,13 @@ def analyze_league_matches(data, league_name):
     return league_rows
 
 # -------------------------------------------------------------------------
-# 🛠️ 탭 분할 및 업데이트 제어 함수
+# 4. 탭 분할 제어 헬퍼
 # -------------------------------------------------------------------------
 def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     try:
         worksheet = spreadsheet.worksheet(sheet_title)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_title, rows="1000", cols="20")
+        worksheet = spreadsheet.add_worksheet(title=sheet_title, rows="1500", cols="20")
     
     worksheet.clear()
     worksheet.append_row(headers)
@@ -174,10 +192,10 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
         worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 4. 메인 오케스트레이션
+# 5. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 멀티 리그 구조화 엔진 가동] ========")
+    print("======== [HYEOKS 글로벌 엔진 v2.6 패치 가동] ========")
     TARGET_LEAGUES = {
         "55": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
         "54": "분데스리가", "102": "J1리그", "42": "챔피언스리그", 
@@ -198,25 +216,31 @@ def main():
         raw_data = fetch_fotmob_league_data(l_id, l_name)
         if raw_data:
             league_results = analyze_league_matches(raw_data, l_name)
-            all_combined_rows.extend(league_results)
-            league_separated_data[l_name] = league_results
-            print(f"  -> {l_name} 시뮬레이션 및 분리 완료")
+            if league_results:
+                all_combined_rows.extend(league_results)
+                league_separated_data[l_name] = league_results
+                print(f"  -> {l_name} 정상 파싱 완료! (데이터 {len(league_results)}건)")
+            else:
+                print(f"  -> ⚠️ {l_name}의 매치 목록이 비어있거나 매칭에 실패했습니다.")
         time.sleep(1.0)
         
-    # 1. 전체 탭 가공 (날짜 내림차순 정렬: 최근 날짜가 맨 위로)
-    print("\n[업데이트] '전체' 통합 탭 동기화 중 (최신일자 정렬)...")
+    if not all_combined_rows:
+        print("❌ 수집된 총 데이터가 없습니다. 시트 동기화를 중단합니다.")
+        return
+
+    # 1. 전체 통합 탭 업데이트 (날짜 내림차순: 최신 날짜가 맨 위로)
+    print("\n[구글시트] '전체' 통합 탭 동기화 중 (최신 날짜 상단 정렬)...")
     all_combined_rows.sort(key=lambda x: (x[1], x[0]), reverse=True)
     update_worksheet_safely(sh, "전체", headers, all_combined_rows)
     
-    # 2. 리그별 개별 탭 동기화
-    print("[업데이트] 개별 리그 분리 탭 동기화 중...")
+    # 2. 개별 리그 탭 분리 업데이트
+    print("[구글시트] 각 리그별 개별 탭 분리 동기화 중...")
     for l_name, rows in league_separated_data.items():
         if rows:
-            # 개별 리그는 일정 확인 편의를 위해 시간 순서(오름차순)로 적재
-            rows.sort(key=lambda x: (x[1], x[0]))
+            rows.sort(key=lambda x: (x[1], x[0])) # 리그별 탭은 시간 순서대로 정렬
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] 구글 시트 구조 개편 및 글로벌 데이터 동기화 완료!")
+    print(" 🎉 [대성공] HYEOKS 글로벌 구조화 데이터 정상 복구 및 정렬 완료!")
 
 if __name__ == "__main__":
     main()
