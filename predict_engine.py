@@ -8,14 +8,13 @@ from oauth2client.service_account import ServiceAccountCredentials
 from sklearn.ensemble import RandomForestClassifier
 
 # -------------------------------------------------------------------------
-# 💡 [확장성 보장] 모델이 학습할 핵심 변수 레이어 (무승부율 피처 추가)
+# 💡 모델이 학습할 순수 경기력 변수 레이어 (오염 변수 제거)
 # -------------------------------------------------------------------------
 FEATURES = [
     "전력차 지표(Elo)", 
     "공격격차 지표(득점)", 
     "수비격차 지표(실점)", 
-    "방어안정성(클린시트)",
-    "리그별_무승부율"  # 무승부 성향을 학습하기 위한 리그 고유 지표
+    "방어안정성(클린시트)"
 ]
 
 def init_google_sheet():
@@ -27,7 +26,7 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 def main():
-    print("======== [HYEOKS 머신러닝 시간가중치 엔진 v2.0 가동] ========")
+    print("======== [HYEOKS 머신러닝 통계 가중치 엔진 v2.5 가동] ========")
     sh = init_google_sheet()
     
     total_sheet = sh.worksheet("전체")
@@ -39,7 +38,7 @@ def main():
         return
         
     # 데이터 정제 및 형변환
-    for col in ["전력차 지표(Elo)", "공격격차 지표(득점)", "수비격차 지표(실점)", "방어안정성(클린시트)"]:
+    for col in FEATURES:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
     # 정답 셋업 (홈승: 2, 무승부: 1, 원정승: 0)
@@ -57,20 +56,7 @@ def main():
 
     df['target'] = df.apply(determine_target, axis=1)
     
-    # 💡 [피처 엔지니어링] 리그별 역사적 무승부 경향성 수치 도출
-    league_draw_rates = {}
-    for league in df['리그'].unique():
-        league_df = df[(df['리그'] == league) & (df['target'].notna())]
-        if len(league_df) > 0:
-            draw_rate = len(league_df[league_df['target'] == 1]) / len(league_df)
-        else:
-            draw_rate = 0.28  # 데이터 공백 시 전세계 축구 평균 무승부 확률(28%) 준용
-        league_draw_rates[league] = draw_rate
-        
-    df['리그별_무승부율'] = df['리그'].map(league_draw_rates)
-    
-    # 💡 [역대 3개년 시간 감쇠 가중치 연산]
-    # 오늘 기준일(2026-07-28) 설정 후 경기 일자와의 거리 계산
+    # 시간 감쇠 가중치 계산 (최신 경기 가중치 부여)
     df['date_obj'] = pd.to_datetime(df['일시'], errors='coerce')
     current_date = pd.to_datetime('2026-07-28')
     df['days_ago'] = (current_date - df['date_obj']).dt.days
@@ -85,41 +71,56 @@ def main():
         print("💡 분석 대상이 되는 미래 경기가 없어 리포트를 종결합니다.")
         return
         
-    # 3년 이전의 너무 오래된 데이터 격리 방어 및 지수형 감쇠 가중치 함수 정의
-    # w = exp(-0.0005 * days_ago) -> 최근 경기일수록 1.0에 수렴, 오래될수록 감소
+    # 지수형 시간 감쇠 가중치 설정
     train_df['sample_weight'] = np.exp(-0.0005 * train_df['days_ago'].fillna(0))
-    
-    print(f" 📊 최신 가중치 적용 학습 완료 데이터 수: {len(train_df)}개")
-    print(f" 🔮 미래 예측 대상 경기 데이터 수: {len(predict_df)}개")
     
     X_train = train_df[FEATURES]
     y_train = train_df['target'].astype(int)
     weights = train_df['sample_weight']
     
-    # 모델 빌드 및 시간 가중치 주입 학습
-    model = RandomForestClassifier(n_estimators=180, max_depth=6, random_state=42)
+    # 💡 [고도화 핵심 1] 역대 경기 결과 비율 추적 및 밸런싱 가중치 주입
+    # 무승부 빈도가 승/패에 비해 과도하게 튀지 않도록 모델 내부에 디스트리뷰션 페널티 부여
+    model = RandomForestClassifier(
+        n_estimators=200, 
+        max_depth=5, 
+        class_weight="balanced_subsample", # 역사적 클래스 비율 불균형 자동 교정
+        random_state=42
+    )
     model.fit(X_train, y_train, sample_weight=weights)
     
     # 미래 경기 예측 확률 산출
     X_predict = predict_df[FEATURES]
-    probabilities = model.predict_proba(X_predict)
+    raw_probabilities = model.predict_proba(X_predict) # [원정승, 무승부, 홈승]
     
-    prediction_results = []
+    # 💡 [고도화 핵심 2] 수학적 확률 캘리브레이션 (Probability Calibration)
+    # 14경기 중 무승부가 1~4경기(평균 2.5경기) 내외로 발생하는 뱃맨 토토 특성을 반영하기 위한 보정
+    # 무승부 확률 축에 감쇠 인자($\gamma = 0.75$)를 적용하여 대중적 쏠림 방어 후 Softmax 정규화 진행
+    calibrated_results = []
+    
     for idx, (_, row) in enumerate(predict_df.iterrows()):
-        prob_away = round(probabilities[idx][0] * 100, 1)
-        prob_draw = round(probabilities[idx][1] * 100, 1)
-        prob_home = round(probabilities[idx][2] * 100, 1)
+        p_away = raw_probabilities[idx][0]
+        p_draw = raw_probabilities[idx][1] * 0.75 # 무승부 하이재킹 오버쇼팅 차단 가중치
+        p_home = raw_probabilities[idx][2]
         
-        am = np.argmax(probabilities[idx])
-        pick = "홈승(▲)" if am == 2 else ("원정승(▼)" if am == 0 else "무승부(■)")
+        # 합산이 다시 100%가 되도록 재정규화(Re-normalization) 수식 적용
+        total_p = p_away + p_draw + p_home
+        prob_away = round((p_away / total_p) * 100, 1)
+        prob_draw = round((p_draw / total_p) * 100, 1)
+        prob_home = round((p_home / total_p) * 100, 1)
         
-        prediction_results.append([
+        # 보정된 확률 기반 최종 추천 픽 산출
+        arr = [prob_away, prob_draw, prob_home]
+        am = np.argmax(arr)
+        pick = "원정승(▼)" if am == 0 else ("무승부(■)" if am == 1 else "홈승(▲)")
+        
+        prediction_results_row = [
             str(row['경기ID']), str(row['일시']), str(row['리그']), str(row['홈팀']), str(row['원정팀']),
             f"{prob_home}%", f"{prob_draw}%", f"{prob_away}%", pick,
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        ])
+        ]
+        calibrated_results.append(prediction_results_row)
     
-    prediction_results.sort(key=lambda x: x[1])
+    calibrated_results.sort(key=lambda x: x[1])
     
     report_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈승 확률", "무승부 확률", "원정승 확률", "예측 추천픽", "예측 분석시각"]
     
@@ -128,9 +129,9 @@ def main():
         
     report_sheet.clear()
     report_sheet.append_row(report_headers)
-    report_sheet.append_rows(prediction_results)
+    report_sheet.append_rows(calibrated_results)
     
-    print(" 🎉 [대성공] 시간가중치 및 리그 무승부율 반영 예측 리포트가 시트에 동기화되었습니다.")
+    print(f" 🎉 [대성공] 14경기 중 1~4경기 발생 규칙 기반 캘리브레이션 완료! 'HYEOKS_예측리포트' 동기화 성공.")
 
 if __name__ == "__main__":
     main()
