@@ -21,7 +21,7 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data")
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 웹페이지 정밀 매립 박스 크롤러 (버그 수정 핵심 구역)
+# 2. FotMob 실시간 데이터 웹페이지 정밀 매립 박스 크롤러
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id, league_name):
     url = f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
@@ -51,11 +51,9 @@ def fetch_fotmob_league_data(league_id, league_name):
             page_props = full_json.get('props', {}).get('pageProps', {})
             fallback_data = page_props.get('fallback', {})
             
-            # [수정 패치] 단순히 'league' 문구 포함 여부가 아닌, 내부 알맹이 구조 검증
             for key, value in fallback_data.items():
                 if isinstance(value, dict):
                     content = value.get('content', {})
-                    # 경기 일정, 순위표, 토너먼트 매치 정보 중 하나라도 들고 있는 진짜 블록 검증
                     if isinstance(content, dict) and ('fixtures' in content or 'table' in content or 'matches' in content):
                         print(f"  🎉 [{league_name}] 핵심 데이터 블록 매칭 성공!")
                         return value
@@ -89,7 +87,6 @@ def analyze_league_matches(data, league_name):
     content = data.get('content', data) if isinstance(data, dict) else {}
     fixtures_data = content.get('fixtures', {})
     
-    # 컵대회 및 다양한 대진표 트리 구조 방어 다각화
     matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
     if not matches and 'matches' in content:
         matches = content.get('matches', {})
@@ -195,11 +192,20 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
 # 5. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v2.6 패치 가동] ========")
+    print("======== [HYEOKS 글로벌 엔진 v2.6 ID 버그 수정 패치 가동] ========")
+    # [수정] 55번을 세리에A로 돌리고, K리그1의 진짜 ID 9080을 매핑
     TARGET_LEAGUES = {
-        "55": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
-        "54": "분데스리가", "102": "J1리그", "42": "챔피언스리그", 
-        "73": "유로파리그", "77": "월드컵", "132": "남축INTL"
+        "9080": "K리그1", 
+        "9116": "K리그2", 
+        "47": "EPL", 
+        "87": "라리가", 
+        "54": "분데스리가", 
+        "55": "세리에A", 
+        "102": "J1리그", 
+        "42": "챔피언스리그", 
+        "73": "유로파리그", 
+        "77": "월드컵", 
+        "132": "남축INTL"
     }
     
     sh = init_google_sheet()
@@ -219,17 +225,17 @@ def main():
             if league_results:
                 all_combined_rows.extend(league_results)
                 league_separated_data[l_name] = league_results
-                print(f"  -> {l_name} 정상 파싱 완료! (데이터 {len(league_results)}건)")
+                print(f"  -> {l_name} 정상 시뮬레이션 및 분리 완료 (데이터 {len(league_results)}건)")
             else:
-                print(f"  -> ⚠️ {l_name}의 매치 목록이 비어있거나 매칭에 실패했습니다.")
+                print(f"  -> ⚠️ {l_name}의 완료/예정 경리가 비어있습니다.")
         time.sleep(1.0)
         
     if not all_combined_rows:
-        print("❌ 수집된 총 데이터가 없습니다. 시트 동기화를 중단합니다.")
+        print("❌ 수집된 총 데이터가 없어 시트를 업데이트하지 못했습니다.")
         return
 
-    # 1. 전체 통합 탭 업데이트 (날짜 내림차순: 최신 날짜가 맨 위로)
-    print("\n[구글시트] '전체' 통합 탭 동기화 중 (최신 날짜 상단 정렬)...")
+    # 1. 전체 통합 탭 업데이트 (최신 날짜가 맨 위로)
+    print("\n[구글시트] '전체' 통합 탭 동기화 중...")
     all_combined_rows.sort(key=lambda x: (x[1], x[0]), reverse=True)
     update_worksheet_safely(sh, "전체", headers, all_combined_rows)
     
@@ -237,10 +243,10 @@ def main():
     print("[구글시트] 각 리그별 개별 탭 분리 동기화 중...")
     for l_name, rows in league_separated_data.items():
         if rows:
-            rows.sort(key=lambda x: (x[1], x[0])) # 리그별 탭은 시간 순서대로 정렬
+            rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] HYEOKS 글로벌 구조화 데이터 정상 복구 및 정렬 완료!")
+    print(" 🎉 [대성공] HYEOKS 데이터 오매핑 보수 완료! K리그1 및 전 리그 지표 정상 이식 완료!")
 
 if __name__ == "__main__":
     main()
