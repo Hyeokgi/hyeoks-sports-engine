@@ -2,7 +2,7 @@ import os
 import json
 import requests
 import gspread
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -80,7 +80,7 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 하이브리드 연대기 시뮬레이터
+# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (2달 미래 필터 포함)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
     if not data or not isinstance(data, dict): return []
@@ -98,6 +98,10 @@ def analyze_league_matches(data, league_name):
     raw_parsed_matches = []
     unique_teams = set()
     
+    # 2달 이후 일정을 걸러내기 위한 기준 기준일 연산 (오늘 + 60일)
+    today = datetime.now()
+    max_future_date = today + timedelta(days=60)
+    
     for match in matches:
         if not isinstance(match, dict): continue
         match_id = match.get('id')
@@ -106,9 +110,18 @@ def analyze_league_matches(data, league_name):
         away_team = match.get('away', {}).get('name')
         if not home_team or not away_team: continue
         
+        m_date = extract_match_date(match) or datetime.now().strftime('%Y-%m-%d')
+        
+        # 💡 [필터 패치] 현재 일 기준으로 2달(60일) 이후의 먼 미래 경기는 수집에서 제외
+        try:
+            match_date_obj = datetime.strptime(m_date, '%Y-%m-%d')
+            if match_date_obj > max_future_date:
+                continue # 시트에 적재하지 않고 다음 경기로 패스
+        except:
+            pass
+            
         unique_teams.add(home_team)
         unique_teams.add(away_team)
-        m_date = extract_match_date(match) or datetime.now().strftime('%Y-%m-%d')
         is_finished = status.get('finished', False)
         score_str = status.get('scoreStr', '')
         
@@ -192,20 +205,11 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
 # 5. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v2.6 ID 버그 수정 패치 가동] ========")
-    # [수정] 55번을 세리에A로 돌리고, K리그1의 진짜 ID 9080을 매핑
+    print("======== [HYEOKS 글로벌 엔진 v2.7 미래 일정 필터 버전 가동] ========")
     TARGET_LEAGUES = {
-        "9080": "K리그1", 
-        "9116": "K리그2", 
-        "47": "EPL", 
-        "87": "라리가", 
-        "54": "분데스리가", 
-        "55": "세리에A", 
-        "102": "J1리그", 
-        "42": "챔피언스리그", 
-        "73": "유로파리그", 
-        "77": "월드컵", 
-        "132": "남축INTL"
+        "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
+        "54": "분데스rika", "55": "세리에A", "102": "J1리그", 
+        "42": "챔피언스리그", "73": "유로파리그", "77": "월드컵", "132": "남축INTL"
     }
     
     sh = init_google_sheet()
@@ -225,28 +229,24 @@ def main():
             if league_results:
                 all_combined_rows.extend(league_results)
                 league_separated_data[l_name] = league_results
-                print(f"  -> {l_name} 정상 시뮬레이션 및 분리 완료 (데이터 {len(league_results)}건)")
-            else:
-                print(f"  -> ⚠️ {l_name}의 완료/예정 경리가 비어있습니다.")
+                print(f"  -> {l_name} 연산 완료 (2달 이내 데이터 {len(league_results)}건)")
         time.sleep(1.0)
         
     if not all_combined_rows:
-        print("❌ 수집된 총 데이터가 없어 시트를 업데이트하지 못했습니다.")
+        print("❌ 2달 이내에 해당하는 경기 데이터가 없어 시트를 업데이트하지 못했습니다.")
         return
 
-    # 1. 전체 통합 탭 업데이트 (최신 날짜가 맨 위로)
-    print("\n[구글시트] '전체' 통합 탭 동기화 중...")
+    print("\n[구글시트] '전체' 통합 탭 동기화 중 (최신일자 상단 정렬)...")
     all_combined_rows.sort(key=lambda x: (x[1], x[0]), reverse=True)
     update_worksheet_safely(sh, "전체", headers, all_combined_rows)
     
-    # 2. 개별 리그 탭 분리 업데이트
     print("[구글시트] 각 리그별 개별 탭 분리 동기화 중...")
     for l_name, rows in league_separated_data.items():
         if rows:
             rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] HYEOKS 데이터 오매핑 보수 완료! K리그1 및 전 리그 지표 정상 이식 완료!")
+    print(" 🎉 [대성공] 2달 초과 미래 경기 숨김 처리 완료! 시트 가독성이 대폭 향상되었습니다.")
 
 if __name__ == "__main__":
     main()
