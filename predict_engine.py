@@ -8,10 +8,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 from sklearn.ensemble import RandomForestClassifier
 
 FEATURES = [
-    "전력차 지표(Elo)", 
-    "공격격차 지표(득점)", 
-    "수비격차 지표(실점)", 
-    "방어안정성(클린시트)"
+    "전력차 지표(Elo)",
+    "공격격차 지표(득점)",
+    "수비격차 지표(실점)",
+    "방어안정성(클린시트)",
+    "상대전적 격차(H2H)",
 ]
 
 def init_google_sheet():

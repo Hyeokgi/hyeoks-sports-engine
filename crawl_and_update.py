@@ -33,6 +33,10 @@ BASELINE_HEADERS = {
     "Referer": "https://www.fotmob.com/",
 }
 
+# 2026-07-28: 백테스트(유럽 4대리그 6시즌, 실배당 기준)로 검증된 두 가지 보정.
+# 데이터에 맞춰 역산한 값이 아니라 ClubElo 등에서 통용되는 축구 홈어드밴티지 경험치를 그대로 채택.
+HOME_ADV = 60.0
+
 PLAYER_STAT_CATEGORIES = [
     "goals", "goal_assist", "expected_goals", "expected_assists", "rating",
     "mins_played", "total_scoring_att", "ontarget_scoring_att", "accurate_pass",
@@ -176,6 +180,36 @@ def fetch_player_leaderboard(stats, league_name, season, id_to_name):
         ])
     return rows
 
+
+# -------------------------------------------------------------------------
+# 1-1. 상대전적(H2H) 캐시 — 여러 시즌치 과거 맞대결을 미리 모아 h2h_cache.json으로 저장해두고 조회
+# (경기당 실시간 스크래핑 대신 정적 캐시를 쓰는 이유: FotMob은 팀 페이지당 요청이 필요해 리그당
+#  수십 건이 추가되므로, 주기적으로 갱신하는 캐시 파일로 대체함. scripts/refresh_h2h_cache.py로 재생성)
+# -------------------------------------------------------------------------
+def load_h2h_cache():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "h2h_cache.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _h2h_key(league, home, away):
+    return f"{league}|" + "|".join(sorted([home, away]))
+
+
+def compute_h2h_diff(cache, league, home, away):
+    """직전 5회 맞대결에서 현재 홈팀 기준 평균 승점 - 1.0(무승부 기준선). 데이터 없으면 0."""
+    entries = cache.get(_h2h_key(league, home, away), [])[-5:]
+    if not entries:
+        return 0.0
+    pts = []
+    for e in entries:
+        winner_pts = 2 if e["hg"] > e["ag"] else (1 if e["hg"] == e["ag"] else 0)
+        pts.append(winner_pts if e["home"] == home else (2 - winner_pts))
+    return round((sum(pts) / len(pts)) - 1.0, 2)
+
+
 # -------------------------------------------------------------------------
 # 2. FotMob 실시간 데이터 웹페이지 철벽 필터링 크롤러
 # -------------------------------------------------------------------------
@@ -245,8 +279,9 @@ def extract_match_date(match):
 # -------------------------------------------------------------------------
 # 3. HYEOKS 하이브리드 연대기 시뮬레이터 (경기, 팀, 선수 3대 매트릭스 추출)
 # -------------------------------------------------------------------------
-def analyze_league_matches(data, league_name, baseline=None):
+def analyze_league_matches(data, league_name, baseline=None, h2h_cache=None):
     if baseline is None: baseline = {}
+    if h2h_cache is None: h2h_cache = {}
     if not data: return [], [], []
     
     content = data.get('content', data) if isinstance(data, dict) else {}
@@ -465,23 +500,26 @@ def analyze_league_matches(data, league_name, baseline=None):
         attack_trend = round(get_recent_avg(team_goals_scored.get(home)) - get_recent_avg(team_goals_scored.get(away)), 2)
         defense_trend = round(get_recent_avg(team_goals_conceded.get(home)) - get_recent_avg(team_goals_conceded.get(away)), 2)
         sheet_trend = get_clean_sheet_count(team_clean_sheets.get(home)) - get_clean_sheet_count(team_clean_sheets.get(away))
+        h2h_diff = compute_h2h_diff(h2h_cache, league_name, home, away)
         tactical_match = "주도 vs 역습" if power_diff > 85 else ("역습 vs 주도" if power_diff < -85 else "균형 vs 균형")
-        
+
         if m['finished'] and m['home_score'] != "":
             hs, as_ = float(m['home_score']), float(m['away_score'])
             team_goals_scored.setdefault(home, []).append(hs); team_goals_scored.setdefault(away, []).append(as_)
             team_goals_conceded.setdefault(home, []).append(as_); team_goals_conceded.setdefault(away, []).append(hs)
             team_clean_sheets.setdefault(home, []).append(1 if as_ == 0 else 0); team_clean_sheets.setdefault(away, []).append(1 if hs == 0 else 0)
-            
+            key = _h2h_key(league_name, home, away)
+            h2h_cache.setdefault(key, []).append({"date": str(m['date']), "home": home, "hg": int(hs), "ag": int(as_)})
+
             S_h = 1.0 if hs > as_ else (0.5 if hs == as_ else 0.0)
-            E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - home_elo) / 400.0))
+            E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - (home_elo + HOME_ADV)) / 400.0))
             K = 40 if league_name in ["챔피언스리그", "유로파리그"] else 32
             elo_dict[home] += K * (S_h - E_h); elo_dict[away] += K * ((1.0 - S_h) - (1.0 - E_h))
 
         league_rows.append([
             str(m['id']), str(m['date']), league_name, home, away,
             str(m['home_score']), str(m['away_score']), str(power_diff),
-            str(attack_trend), str(defense_trend), str(sheet_trend), 
+            str(attack_trend), str(defense_trend), str(sheet_trend), str(h2h_diff),
             tactical_match, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
         
@@ -556,7 +594,8 @@ def main():
     }
     sh = init_google_sheet()
     
-    match_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈스코어", "원정스코어", "전력차 지표(Elo)", "공격격차 지표(득점)", "수비격차 지표(실점)", "방어안정성(클린시트)", "전술매칭", "최종 갱신일자"]
+    match_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈스코어", "원정스코어", "전력차 지표(Elo)", "공격격차 지표(득점)", "수비격차 지표(실점)", "방어안정성(클린시트)", "상대전적 격차(H2H)", "전술매칭", "최종 갱신일자"]
+    h2h_cache = load_h2h_cache()
     team_headers = [
         "팀명", "리그", "현재순위", "현재승점", 
         "종합_경기수", "종합_승률(%)", "종합_전적", "종합_평균득점", "종합_평균실점",
@@ -581,7 +620,7 @@ def main():
 
         raw_data = fetch_fotmob_league_data(l_id, l_name)
         if raw_data:
-            m_rows, t_rows, p_rows = analyze_league_matches(raw_data, l_name, baseline)
+            m_rows, t_rows, p_rows = analyze_league_matches(raw_data, l_name, baseline, h2h_cache)
             # 조건 방어 해제: 팀 통계나 선수 통계가 확보되었다면 파이프라인 무조건 가동
             if m_rows or t_rows or p_rows:
                 all_matches.extend(m_rows)
