@@ -55,6 +55,9 @@ def fetch_fotmob_league_data(league_id, league_name):
                     content = value.get('content', {})
                     if isinstance(content, dict) and ('fixtures' in content or 'table' in content or 'matches' in content):
                         return value
+                    if 'fixtures' in value or 'table' in value or 'matches' in value:
+                        return value
+                        
             if 'data' in page_props: return page_props['data']
             return page_props
     except Exception as e:
@@ -74,7 +77,7 @@ def extract_match_date(match):
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (순위표 Elo 초기화 반영)
+# 3. HYEOKS 하이브리드 연대기 시뮬레이터 (v2.9 프리시즌 서열 승계 버전)
 # -------------------------------------------------------------------------
 def analyze_league_matches(data, league_name):
     if not data or not isinstance(data, dict): return []
@@ -82,13 +85,13 @@ def analyze_league_matches(data, league_name):
     fixtures_data = content.get('fixtures', {})
     table_data_root = content.get('table', [])
     
-    # 1. 순위표(Table) 데이터 파싱하여 팀 목록 및 기본 체급 베이스라인 추출
     team_stats = {}
     valid_league_teams = set()
+    max_pts_in_league = 0
+    total_teams_count = 0
     
     if isinstance(table_data_root, list) and len(table_data_root) > 0:
         table_rows = []
-        # 일반 리그 테이블 구조 방어
         t_data = table_data_root[0].get('data', {})
         if isinstance(t_data, dict):
             table_rows = t_data.get('table', [])
@@ -96,13 +99,17 @@ def analyze_league_matches(data, league_name):
             table_rows = table_data_root[0].get('table', [])
             
         if isinstance(table_rows, list):
+            total_teams_count = len(table_rows)
             for row in table_rows:
                 if isinstance(row, dict) and row.get('name'):
                     t_name = row.get('name')
                     valid_league_teams.add(t_name)
+                    pts = row.get('pts') or row.get('points', 0)
+                    if pts > max_pts_in_league:
+                        max_pts_in_league = pts
                     team_stats[t_name] = {
                         'rank': row.get('idx') or row.get('rank', 1),
-                        'pts': row.get('pts') or row.get('points', 0)
+                        'pts': pts
                     }
 
     matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
@@ -122,8 +129,6 @@ def analyze_league_matches(data, league_name):
         away_team = match.get('away', {}).get('name')
         
         if not home_team or not away_team: continue
-        
-        # [철벽 방어 패치] 순위표에 존재하지 않는 타 리그 유령 팀 난입 차단
         if valid_league_teams and (home_team not in valid_league_teams or away_team not in valid_league_teams):
             continue
             
@@ -153,14 +158,21 @@ def analyze_league_matches(data, league_name):
     if not raw_parsed_matches: return []
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
     
-    # 💡 [콜드스타트 해결 핵심 패치] 순위표 기반 초기 Elo 차등 지급 (Base Elo)
+    # 💡 [프리시즌 하이재킹 패치] 리그의 최대 승점이 0점(개막 전)인 경우, 초기 서열(idx)을 기반으로 체급 분배
     elo_dict = {}
+    is_preseason = (max_pts_in_league == 0 and total_teams_count > 0)
+    
     for team in valid_league_teams:
-        # 승점(pts) 1점당 3점의 Elo 보너스를 지급하여 초기 체급 차별화
-        pts_bonus = team_stats.get(team, {}).get('pts', 0) * 3.0
-        elo_dict[team] = 1500.0 + pts_bonus
+        if is_preseason:
+            # 1위 팀은 1620점 근처, 꼴찌 팀은 1380점 근처로 서열 상속 연산
+            rank = team_stats[team]['rank']
+            rank_factor = (total_teams_count - rank) / (total_teams_count - 1) if total_teams_count > 1 else 0.5
+            elo_dict[team] = 1380.0 + (rank_factor * 240.0)
+        else:
+            # 기존 시즌 중일 때는 승점 비례 보너스 지급
+            pts_bonus = team_stats.get(team, {}).get('pts', 0) * 3.0
+            elo_dict[team] = 1500.0 + pts_bonus
 
-    # 만약 순위표 데이터가 없는 특수 대회의 경우 기존 1500점 기본값 세팅
     for m in raw_parsed_matches:
         if m['home'] not in elo_dict: elo_dict[m['home']] = 1500.0
         if m['away'] not in elo_dict: elo_dict[m['away']] = 1500.0
@@ -222,10 +234,10 @@ def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
     if rows: worksheet.append_rows(rows)
 
 # -------------------------------------------------------------------------
-# 4. 메인 실행 컨트롤러
+# 5. 메인 실행 컨트롤러
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 글로벌 엔진 v2.8 콜드스타트 완벽 패치 가동] ========")
+    print("======== [HYEOKS 글로벌 엔진 v2.9 프리시즌 서열 승계 버전 가동] ========")
     TARGET_LEAGUES = {
         "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
         "54": "분데스리가", "55": "세리에A", "102": "J1리그", 
@@ -266,7 +278,7 @@ def main():
             rows.sort(key=lambda x: (x[1], x[0]))
             update_worksheet_safely(sh, l_name, headers, rows)
             
-    print(" 🎉 [대성공] 타 리그 난입 원천 차단 및 실시간 순위표 기반 가중치 연산 완료!")
+    print(" 🎉 [대성공] 유럽 프리시즌 공백 돌파! 지난 시즌 성적 기반 전력차 완벽 복구 완료!")
 
 if __name__ == "__main__":
     main()
