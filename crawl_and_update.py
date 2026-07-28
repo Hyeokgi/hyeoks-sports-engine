@@ -3,6 +3,7 @@ import json
 import requests
 import gspread
 from datetime import datetime
+import time
 from oauth2client.service_account import ServiceAccountCredentials
 
 # -------------------------------------------------------------------------
@@ -22,7 +23,7 @@ def init_google_sheet():
 # -------------------------------------------------------------------------
 # 2. FotMob 실시간 데이터 웹페이지 직공 크롤러
 # -------------------------------------------------------------------------
-def fetch_fotmob_league_data(league_id="9116"):
+def fetch_fotmob_league_data(league_id, league_name):
     url = f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -30,22 +31,22 @@ def fetch_fotmob_league_data(league_id="9116"):
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"
     }
     
-    print(f" 🌐 실제 웹페이지 접속 시도: {url}")
-    response = requests.get(url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        print(f"❌ 웹페이지 접근 실패 (상태 코드: {response.status_code})")
-        return None
+    print(f" 🌐 [{league_name}] 웹페이지 접속 시도...")
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"  ❌ 접근 실패 (상태 코드: {response.status_code})")
+            return None
+            
+        html_content = response.text
+        start_str = '<script id="__NEXT_DATA__" type="application/json">'
+        end_str = '</script>'
         
-    html_content = response.text
-    start_str = '<script id="__NEXT_DATA__" type="application/json">'
-    end_str = '</script>'
-    
-    if start_str in html_content:
-        start_idx = html_content.find(start_str) + len(start_str)
-        end_idx = html_content.find(end_str, start_idx)
-        json_str = html_content[start_idx:end_idx].strip()
-        
-        try:
+        if start_str in html_content:
+            start_idx = html_content.find(start_str) + len(start_str)
+            end_idx = html_content.find(end_str, start_idx)
+            json_str = html_content[start_idx:end_idx].strip()
+            
             full_json = json.loads(json_str)
             page_props = full_json.get('props', {}).get('pageProps', {})
             fallback_data = page_props.get('fallback', {})
@@ -56,44 +57,35 @@ def fetch_fotmob_league_data(league_id="9116"):
             if 'data' in page_props:
                 return page_props['data']
             return page_props
-        except Exception as e:
-            print(f"❌ 매립 데이터 JSON 파싱 실패: {e}")
-            return None
+    except Exception as e:
+        print(f"  ❌ 크롤링 중 에러 발생: {e}")
     return None
 
-# -------------------------------------------------------------------------
-# 💡 안전한 날짜 추출 헬퍼 함수
-# -------------------------------------------------------------------------
 def extract_match_date(match):
-    if not isinstance(match, dict):
-        return None
+    if not isinstance(match, dict): return None
     status = match.get('status', {})
     if isinstance(status, dict) and status.get('utcTime'):
         return str(status.get('utcTime')).split('T')[0]
-    for field in ['date', 'time', 'timeStr', 'startDate']:
+    for field in ['date', 'time', 'timeStr']:
         val = match.get(field)
         if val and isinstance(val, str):
             if 'T' in val: return val.split('T')[0]
-            if ' ' in val: return val.split(' ')[0]
             if '-' in val: return val
     return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 엔진 연동형 크로노 시뮬레이터 (자체 Elo & Form 추적)
+# 3. HYEOKS 멀티 리그 연대기 시뮬레이터 (공수 스탯 세부 가공 파서)
 # -------------------------------------------------------------------------
-def analyze_matches(data):
-    if not data or not isinstance(data, dict):
-        return []
+def analyze_league_matches(data, league_name):
+    if not data or not isinstance(data, dict): return []
 
     content = data.get('content', data) if isinstance(data, dict) else {}
     fixtures_data = content.get('fixtures', {})
     matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
     
     if not isinstance(matches, list) or not matches:
-        print("⚠️ 경기 목록을 추출하지 못했습니다.")
         return []
 
-    # 1차 패스: 파싱 및 기본 데이터 정제
     raw_parsed_matches = []
     unique_teams = set()
     
@@ -133,112 +125,138 @@ def analyze_matches(data):
             'away_score': away_score
         })
 
-    # 2차 패스: 연대기 순 정렬 (시뮬레이션을 위해 시간순 정렬 필수)
+    # 시간 순서 정렬
     raw_parsed_matches.sort(key=lambda x: (x['date'], str(x['id'])))
 
-    # 자체 시뮬레이션 엔진 초기화
+    # 리그 전용 시뮬레이션 공간 독립 생성
     elo_dict = {team: 1500.0 for team in unique_teams}
-    team_history = {team: [] for team in unique_teams} # 최근 폼 추적용
+    team_goals_scored = {team: [] for team in unique_teams}   # 최근 득점 트렌드
+    team_goals_conceded = {team: [] for team in unique_teams} # 최근 실점 트렌드
+    team_clean_sheets = {team: [] for team in unique_teams}    # 클린시트 기록
 
-    processed_rows = []
+    league_rows = []
     
-    # 3차 패스: 시간 흐름에 따른 전력 및 폼 연산
     for m in raw_parsed_matches:
-        home = m['home']
-        away = m['away']
+        home, away = m['home'], m['away']
         
-        # 경기 시작 직전 시점의 두 팀 체급 확보
-        home_elo = elo_dict[home]
-        away_elo = elo_dict[away]
+        # 경기 직전 시점 체급
+        home_elo, away_elo = elo_dict[home], elo_dict[away]
         power_diff = round(home_elo - away_elo, 2)
         
-        # 최근 5경기 기반의 폼 점수 계산 함수
-        def get_form_score(history):
-            score = 0.0
-            for idx, res in enumerate(history[-5:]):
-                weight = 1.0 - (idx * 0.1) # 최근 경기일수록 가중치 부여
-                if res == 'W': score += 3.0 * weight
-                elif res == 'D': score += 1.0 * weight
-            return round(score, 2)
+        # 최근 5경기 세부 골 패턴 연산 함수
+        def get_recent_avg(history):
+            if not history: return 0.0
+            recent = history[-5:]
+            return round(sum(recent) / len(recent), 2)
             
-        home_form = get_form_score(team_history[home])
-        away_form = get_form_score(team_history[away])
-        h2h_index = round(home_form - away_form, 2)
+        def get_clean_sheet_count(history):
+            if not history: return 0
+            return history[-5:].count(1)
+
+        h_avg_scored = get_recent_avg(team_goals_scored[home])
+        h_avg_conceded = get_recent_avg(team_goals_conceded[home])
+        h_clean_count = get_clean_sheet_count(team_clean_sheets[home])
         
-        # 전술 매칭 아키타입 정의 (체급 차이 기준 분화)
+        a_avg_scored = get_recent_avg(team_goals_scored[away])
+        a_avg_conceded = get_recent_avg(team_goals_conceded[away])
+        a_clean_count = get_clean_sheet_count(team_clean_sheets[away])
+        
+        # 상대적 스탯 격차 지표로 압축 가공 (홈 - 원정)
+        attack_trend = round(h_avg_scored - a_avg_scored, 2)
+        defense_trend = round(h_avg_conceded - a_avg_conceded, 2)
+        sheet_trend = h_clean_count - a_clean_count
+        
         if power_diff > 80: tactical_match = "주도 vs 역습"
         elif power_diff < -80: tactical_match = "역습 vs 주도"
         else: tactical_match = "균형 vs 균형"
         
-        # 경기가 완료되었다면 결과 반영하여 엔진 업데이트 (다음 경기에 영향 제공)
+        # 시뮬레이터 실시간 사후 업데이트
         if m['finished']:
-            h_s = m['home_score']
-            a_s = m['away_score']
+            h_s, a_s = m['home_score'], m['away_score']
             
-            if h_s > a_s:
-                h_res, a_res = 'W', 'L'
-                S_h, S_a = 1.0, 0.0
-            elif h_s < a_s:
-                h_res, a_res = 'L', 'W'
-                S_h, S_a = 0.0, 1.0
-            else:
-                h_res, a_res = 'D', 'D'
-                S_h, S_a = 0.5, 0.5
-                
-            team_history[home].append(h_res)
-            team_history[away].append(a_res)
+            # 득실점 패턴 트래킹 아카이브에 적재
+            team_goals_scored[home].append(h_s)
+            team_goals_scored[away].append(a_s)
+            team_goals_conceded[home].append(a_s)
+            team_goals_conceded[away].append(h_s)
             
-            # Elo 수학 공식 적용 격차 업데이트
+            # 클린시트(무실점) 여부 판정 (1: 무실점 성공, 0: 실점)
+            team_clean_sheets[home].append(1 if a_s == 0 else 0)
+            team_clean_sheets[away].append(1 if h_s == 0 else 0)
+            
+            # Elo 연산 변동
+            S_h = 1.0 if h_s > a_s else (0.5 if h_s == a_s else 0.0)
+            S_a = 1.0 - S_h
             E_h = 1.0 / (1.0 + 10.0 ** ((away_elo - home_elo) / 400.0))
-            E_a = 1.0 / (1.0 + 10.0 ** ((home_elo - away_elo) / 400.0))
+            E_a = 1.0 - E_h
             
-            K = 32
-            elo_dict[home] += K * (S_h - E_h)
-            elo_dict[away] += K * (S_a - E_a)
+            elo_dict[home] += 32 * (S_h - E_h)
+            elo_dict[away] += 32 * (S_a - E_a)
 
-        # 결과 행 매핑
-        processed_rows.append([
+        # 고도화 변수들(최근 공격력 격차, 수비 안정도 격차, 클린시트 격차)을 컬럼에 결합
+        league_rows.append([
             str(m['id']),
             str(m['date']),
-            "K리그2",
+            league_name,
             home,
             away,
             str(int(m['home_score'])) if m['finished'] else "",
             str(int(m['away_score'])) if m['finished'] else "",
             str(power_diff),
-            str(h2h_index),
+            str(attack_trend),  # 신규 고도화 변수: 최근 공격 트렌드 격차
+            str(defense_trend), # 신규 고도화 변수: 최근 수비 불안도 격차
+            str(sheet_trend),   # 신규 고도화 변수: 최근 클린시트 안정감 격차
             tactical_match,
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
         
-    return processed_rows
+    return league_rows
 
 # -------------------------------------------------------------------------
 # 4. 메인 컨트롤러 오케스트레이션
 # -------------------------------------------------------------------------
 def main():
-    print("======== [HYEOKS 시뮬레이션 엔진 가동] ========")
+    print("======== [HYEOKS 멀티 시뮬레이션 엔진 v2.0 가동] ========")
+    
+    # 확장 타겟 리그 맵 정의 (FotMob League ID Mapping)
+    TARGET_LEAGUES = {
+        "55": "K리그1",
+        "9116": "K리그2",
+        "47": "EPL",
+        "87": "라리가",
+        "54": "분데스리가"
+    }
+    
     print("[1/3] 구글 시트 인증 프로세스 진입...")
     sheet = init_google_sheet()
     
-    print("[2/3] FotMob 실시간 데이터 파이프라인 타격 중...")
-    raw_data = fetch_fotmob_league_data("9116")
+    all_combined_rows = []
     
-    if not raw_data:
-        print("[오류] 원천 데이터를 확보하지 못해 엔진을 종료합니다.")
-        return
+    print("[2/3] 글로벌 다중 리그 실시간 크롤링 및 파이프라인 연산...")
+    for l_id, l_name in TARGET_LEAGUES.items():
+        raw_data = fetch_fotmob_league_data(l_id, l_name)
+        if raw_data:
+            league_results = analyze_league_matches(raw_data, l_name)
+            all_combined_rows.extend(league_results)
+            print(f"  -> {l_name} 연산 완료 ({len(league_results)}개 매치 수치화 완료)")
+        else:
+            print(f"  -> [경고] {l_name} 데이터를 불러오지 못해 건너뜁니다.")
+        time.sleep(1.0) # 글로벌 서버 차단 우회용 안전 대기 시간
         
-    print("[3/3] 정성적 전술/상성 데이터 수치화 연산 시작...")
-    rows_to_insert = analyze_matches(raw_data)
-    
-    if rows_to_insert:
-        headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈스코어", "원정스코어", "전력차 지표", "상대전적 지표", "전술매칭", "최종 갱신일자"]
+    print("[3/3] 통합 데이터 구글 시트 동기화 프로세스...")
+    if all_combined_rows:
+        headers = [
+            "경기ID", "일시", "리그", "홈팀", "원정팀", 
+            "홈스코어", "원정스코어", "전력차 지표(Elo)", 
+            "공격격차 지표(득점)", "수비격차 지표(실점)", "방어안정성(클린시트)", 
+            "전술매칭", "최종 갱신일자"
+        ]
         sheet.clear()
         sheet.append_row(headers)
-        sheet.append_rows(rows_to_insert)
-        print(f" 성공적으로 {len(rows_to_insert)}개의 경기 데이터 및 고도화 변수가 구글 시트에 동기화되었습니다.")
+        sheet.append_rows(all_combined_rows)
+        print(f" 🎉 축하합니다! 총 {len(all_combined_rows)}개의 멀티 리그 매치와 세부 스탯 피처가 구글 시트에 완벽 동기화되었습니다.")
     else:
-        print("[경고] 업데이트할 연산 결과가 존재하지 않습니다.")
+        print("[오류] 연산된 매치 결과가 하나도 없어 시트를 업데이트하지 못했습니다.")
 
 if __name__ == "__main__":
     main()
