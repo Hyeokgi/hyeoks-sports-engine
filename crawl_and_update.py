@@ -22,110 +22,128 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data").sheet1
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 API 크롤러 (스마트 스캐너 버전)
+# 2. FotMob 실시간 데이터 웹페이지 직공 크롤러 (안정성 100% 버전)
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id="9116"):
-    """FotMob의 변경된 내부 API 주소를 자동으로 탐색하여 데이터를 가져옵니다."""
-    import time
+    """API 대신 실제 웹페이지 HTML을 로드하여 내부에 숨겨진 데이터 박스를 추출합니다."""
+    import re
     
-    # 현재 FotMob 백엔드에서 가능성 있는 주소 후보군들
-    candidate_urls = [
-        f"https://www.fotmob.com/api/leagues?id={league_id}",
-        f"https://www.fotmob.com/api/league?id={league_id}",
-        f"https://www.fotmob.com/api/leagueOverview?id={league_id}",
-        f"https://www.fotmob.com/api/leagues/{league_id}",
-        f"https://www.fotmob.com/api/league/{league_id}"
-    ]
+    # 실제 사용자가 브라우저로 접속하는 일반 웹페이지 주소
+    url = f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-        "Referer": f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"
     }
     
-    print(f" 주소 탐색 시작 (리그 ID: {league_id})...")
+    print(f" 🌐 실제 웹페이지 접속 시도: {url}")
+    response = requests.get(url, headers=headers, timeout=10)
     
-    for idx, url in enumerate(candidate_urls, 1):
+    if response.status_code != 200:
+        print(f"❌ 웹페이지 접근 실패 (상태 코드: {response.status_code})")
+        return None
+        
+    html_content = response.text
+    
+    # HTML 내부에 Next.js가 숨겨놓은 __NEXT_DATA__ 스크립트 태그 추출
+    print(" 🔍 HTML 내부 데이터 매립 박스 탐색 중...")
+    start_str = '<script id="__NEXT_DATA__" type="application/json">'
+    end_str = '</script>'
+    
+    if start_str in html_content:
+        start_idx = html_content.find(start_str) + len(start_str)
+        end_idx = html_content.find(end_str, start_idx)
+        json_str = html_content[start_idx:end_idx].strip()
+        
         try:
-            print(f"  [시도 {idx}] 테스트 중: {url}")
-            response = requests.get(url, headers=headers, timeout=5)
+            full_json = json.loads(json_str)
+            # FotMob 특유의 매립 데이터 트리 구조 진입
+            page_props = full_json.get('props', {}).get('pageProps', {})
+            fallback_data = page_props.get('fallback', {})
             
-            if response.status_code == 200:
-                print(f" 🎉 [성공] 작동하는 API 주소를 찾았습니다! -> {url}")
-                return response.json()
-            else:
-                print(f"  -> 실패 (상태 코드: {response.status_code})")
+            # 데이터가 담긴 키값을 동적으로 탐색
+            for key, value in fallback_data.items():
+                if "league" in key and "overview" in key:
+                    print(" 🎉 [성공] 매립된 리그 데이터 구조를 해독했습니다.")
+                    return value
+                    
+            # 구조가 다를 경우 pageProps 내부 직접 탐색 기본값
+            if 'data' in page_props:
+                return page_props['data']
                 
+            return page_props
+            
         except Exception as e:
-            print(f"  -> 에러 발생: {e}")
-        
-        time.sleep(0.5) # 서버 부하 방지용 미세 대기
-        
-    print("❌ [오류] 모든 후보 API 주소가 404 또는 차단되었습니다.")
-    return None
+            print(f"❌ 매립 데이터 JSON 파싱 실패: {e}")
+            return None
+    else:
+        print("❌ HTML 소스 내에서 __NEXT_DATA__ 장치를 찾지 못했습니다.")
+        return None
 
 # -------------------------------------------------------------------------
-# 3. HYEOKS 엔진 고도화 변수 연산 (시뮬레이션 로직)
+# 3. HYEOKS 엔진 고도화 변수 연산 (웹페이지 데이터 구조 최적화)
 # -------------------------------------------------------------------------
 def analyze_matches(data):
-    if not data or 'fixtures' not in data or 'allMatches' not in data['fixtures']:
-        return []
+    # 구조 레이어 방어 코드
+    content = data.get('content', data) if isinstance(data, dict) else {}
+    fixtures_data = content.get('fixtures', {})
+    table_data_root = content.get('table', [])
     
-    # 팀별 기본 스탯 매핑 테이블 빌드 (순위표 기반 데이터 추출)
+    # 팀별 순위 및 승점 매핑 테이블 빌드
     team_stats = {}
-    if 'table' in data and len(data['table']) > 0:
-        # 일반적인 리그 테이블 구조 파싱
-        table_data = data['table'][0].get('data', {}).get('table', [])
-        for row in table_data:
+    if isinstance(table_data_root, list) and len(table_data_root) > 0:
+        table_rows = table_data_root[0].get('data', {}).get('table', [])
+        for row in table_rows:
             t_name = row.get('name')
             team_stats[t_name] = {
                 'rank': row.get('idx'),
-                'pts': row.get('pts'),
-                'deduction': row.get('deduction', 0)
+                'pts': row.get('pts')
             }
 
     processed_rows = []
-    matches = data['fixtures']['allMatches']
+    # 내정된 경기일정 섹션 확보
+    matches = fixtures_data.get('allMatches', fixtures_data.get('fixtures', []))
     
+    if not matches:
+        print("⚠️ 가동할 예정 경기 또는 완료 경기 목록이 비어있습니다.")
+        return []
+
     for match in matches:
-        # 경기본질 정보
         match_id = match.get('id')
         status = match.get('status', {})
         
-        # 이미 종료된 경기이거나 오늘/내일 열릴 대진만 타겟팅
-        date_str = match.get('pageUrl', '').split('/')[-1] # 임시 날짜 파싱 규칙
         home_team = match.get('home', {}).get('name')
         away_team = match.get('away', {}).get('name')
         
-        # 스코어 처리
-        home_score = status.get('scoreStr', '').split('-')[0].strip() if status.get('finished') else ""
-        away_score = status.get('scoreStr', '').split('-')[1].strip() if status.get('finished') else ""
+        # 스코어 처리 (종료된 경기와 예정 경기 구분)
+        is_finished = status.get('finished', False)
+        home_score = status.get('scoreStr', '0-0').split('-')[0].strip() if is_finished else ""
+        away_score = status.get('scoreStr', '0-0').split('-')[1].strip() if is_finished else ""
         
-        # [고도화 변수 1] 팀 체급 전력차 (Power Difference)
-        # 평점 시스템 대용으로 현재 순위와 승점 기반 전력 지표 가공
-        home_pts = team_stats.get(home_team, {}).get('pts', 15) # 데이터 공백 시 기본값
+        # [고도화 변수 1] 체급 전력차 연산
+        home_pts = team_stats.get(home_team, {}).get('pts', 15)
         away_pts = team_stats.get(away_team, {}).get('pts', 15)
         power_diff = round(float(home_pts - away_pts), 2)
         
-        # [고도화 변수 2] 가상 H2H(상대전적) 및 전술 상성 인덱스 
-        # API에서 제공하는 최근 폼(Form) 데이터를 대리 변수로 가공
+        # [고도화 변수 2] 최근 폼 기반 인덱스 가공
         home_form = match.get('home', {}).get('form', [])
         away_form = match.get('away', {}).get('form', [])
         
-        # 최근 폼 점수 환산 (최근 경기 승리 가중치)
         def calculate_form_score(form_list):
             score = 0.0
-            for idx, f in enumerate(form_list[:5]):
-                weight = 1.0 - (idx * 0.1) # 최근 경기일수록 가중치 높음
-                if f == 'W': score += 3.0 * weight
-                elif f == 'D': score += 1.0 * weight
+            if isinstance(form_list, list):
+                for idx, f in enumerate(form_list[:5]):
+                    weight = 1.0 - (idx * 0.1)
+                    # FotMob 폼 데이터 객체 또는 문자열 방어 처리
+                    f_str = f.get('result', '') if isinstance(f, dict) else str(f)
+                    if f_str == 'W': score += 3.0 * weight
+                    elif f_str == 'D': score += 1.0 * weight
             return round(score, 2)
             
         h2h_index = round(calculate_form_score(home_form) - calculate_form_score(away_form), 2)
         
-        # [고도화 변수 3] 전술 매칭 아키타입 (Style Alignment)
-        # 상위권 팀과 하위권 팀의 대결 양상을 스타일 카테고리로 강제 분류
+        # [고도화 변수 3] 전술 매칭 카테고리화
         home_rank = team_stats.get(home_team, {}).get('rank', 5)
         away_rank = team_stats.get(away_team, {}).get('rank', 5)
         if home_rank <= 4 and away_rank >= 8:
@@ -135,7 +153,6 @@ def analyze_matches(data):
         else:
             tactical_match = "균형 vs 균형"
 
-        # 구글 시트에 들어갈 최종 데이터 행 정의
         processed_rows.append([
             str(match_id),
             str(match.get('timeStr', datetime.now().strftime('%Y-%m-%d'))),
@@ -144,10 +161,10 @@ def analyze_matches(data):
             away_team,
             str(home_score),
             str(away_score),
-            str(power_diff),      # 변수 1: 체급 차이
-            str(h2h_index),       # 변수 2: 최근 상성 지표
-            tactical_match,       # 변수 3: 전술 궁합
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S') # 갱신 시각
+            str(power_diff),
+            str(h2h_index),
+            tactical_match,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
         
     return processed_rows
