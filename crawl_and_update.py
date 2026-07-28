@@ -22,23 +22,48 @@ def init_google_sheet():
     return gc.open("HYEOKS_Sports_Toto_Data").sheet1
 
 # -------------------------------------------------------------------------
-# 2. FotMob 실시간 데이터 API 크롤러 (수정본)
+# 2. FotMob 실시간 데이터 API 크롤러 (스마트 스캐너 버전)
 # -------------------------------------------------------------------------
 def fetch_fotmob_league_data(league_id="9116"):
-    """FotMob 내부 API를 통해 리그 데이터(순위표, 경기 일정)를 가져옵니다."""
-    # leagues -> league (단수형)으로 주소 수정
-    url = f"https://www.fotmob.com/api/league?id={league_id}&ccode3=KOR"
+    """FotMob의 변경된 내부 API 주소를 자동으로 탐색하여 데이터를 가져옵니다."""
+    import time
+    
+    # 현재 FotMob 백엔드에서 가능성 있는 주소 후보군들
+    candidate_urls = [
+        f"https://www.fotmob.com/api/leagues?id={league_id}",
+        f"https://www.fotmob.com/api/league?id={league_id}",
+        f"https://www.fotmob.com/api/leagueOverview?id={league_id}",
+        f"https://www.fotmob.com/api/leagues/{league_id}",
+        f"https://www.fotmob.com/api/league/{league_id}"
+    ]
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+        "Referer": f"https://www.fotmob.com/ko/leagues/{league_id}/overview/"
     }
     
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        print(f"FotMob API 접근 실패: 상태 코드 {response.status_code}")
-        return None
-    return response.json()
+    print(f" 주소 탐색 시작 (리그 ID: {league_id})...")
+    
+    for idx, url in enumerate(candidate_urls, 1):
+        try:
+            print(f"  [시도 {idx}] 테스트 중: {url}")
+            response = requests.get(url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                print(f" 🎉 [성공] 작동하는 API 주소를 찾았습니다! -> {url}")
+                return response.json()
+            else:
+                print(f"  -> 실패 (상태 코드: {response.status_code})")
+                
+        except Exception as e:
+            print(f"  -> 에러 발생: {e}")
+        
+        time.sleep(0.5) # 서버 부하 방지용 미세 대기
+        
+    print("❌ [오류] 모든 후보 API 주소가 404 또는 차단되었습니다.")
+    return None
 
 # -------------------------------------------------------------------------
 # 3. HYEOKS 엔진 고도화 변수 연산 (시뮬레이션 로직)
