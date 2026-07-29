@@ -366,9 +366,10 @@ def analyze_league_matches(data, league_name, baseline=None, h2h_cache=None):
         p_home, wr_home, rec_home, gf_home, ga_home = calculate_metrics(r_home)
         p_away, wr_away, rec_away, gf_away, ga_away = calculate_metrics(r_away)
         
-        form_list = r_all.get('form', [])
-        form_str = ",".join([f.get('result', '?') if isinstance(f, dict) else str(f) for f in form_list]) if isinstance(form_list, list) else "-"
-        
+        # 2026-07-29: FotMob 순위표 행에 더 이상 'form' 필드가 없어 항상 비어있던 버그.
+        # 아래 [C] 구역에서 경기 이력을 순회하며 채운 team_recent_results로 루프 종료 후 patch한다.
+        form_str = "-"
+
         team_summary_rows.append([
             t_name, league_name, str(r_all.get('idx', '-')), str(int(r_all.get('pts', 0))),
             p_all, wr_all, rec_all, gf_all, ga_all,
@@ -477,6 +478,7 @@ def analyze_league_matches(data, league_name, baseline=None, h2h_cache=None):
             rank_factor = (total_teams_count - rank) / (total_teams_count - 1) if total_teams_count > 1 else 0.5
             elo_dict[team] = 1380.0 + (rank_factor * 240.0)
 
+    team_recent_results = {}  # team -> ['승', '무', '패', ...] 시간순(오래된 것 먼저), 최근5경기_폼 patch용
     team_goals_scored, team_goals_conceded, team_clean_sheets = {}, {}, {}
     for team, initial_elo in elo_dict.items():
         if is_preseason:
@@ -515,6 +517,10 @@ def analyze_league_matches(data, league_name, baseline=None, h2h_cache=None):
             team_goals_scored.setdefault(home, []).append(hs); team_goals_scored.setdefault(away, []).append(as_)
             team_goals_conceded.setdefault(home, []).append(as_); team_goals_conceded.setdefault(away, []).append(hs)
             team_clean_sheets.setdefault(home, []).append(1 if as_ == 0 else 0); team_clean_sheets.setdefault(away, []).append(1 if hs == 0 else 0)
+            home_result = "승" if hs > as_ else ("무" if hs == as_ else "패")
+            away_result = "승" if as_ > hs else ("무" if hs == as_ else "패")
+            team_recent_results.setdefault(home, []).append(home_result)
+            team_recent_results.setdefault(away, []).append(away_result)
             key = _h2h_key(league_name, home, away)
             h2h_cache.setdefault(key, []).append({"date": str(m['date']), "home": home, "hg": int(hs), "ag": int(as_)})
 
@@ -529,7 +535,13 @@ def analyze_league_matches(data, league_name, baseline=None, h2h_cache=None):
             str(attack_trend), str(defense_trend), str(sheet_trend), str(h2h_diff),
             tactical_match, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
-        
+
+    # team_summary_rows의 form_str(index 19) placeholder를 실제 최근 5경기 결과로 patch
+    for row in team_summary_rows:
+        recent = team_recent_results.get(row[0], [])[-5:]
+        if recent:
+            row[19] = ",".join(recent)
+
     return league_rows, team_summary_rows, player_rows
 
 def update_worksheet_safely(spreadsheet, sheet_title, headers, rows):
