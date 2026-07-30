@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import numpy as np
 import gspread
+import requests
 from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from sklearn.ensemble import RandomForestClassifier
@@ -14,6 +15,57 @@ FEATURES = [
     "방어안정성(클린시트)",
     "상대전적 격차(H2H)",
 ]
+
+# 2026-07-30: K리그1/K리그2는 RandomForest 대신 kleague-toto-predictor 앱(Elo+최근폼+
+# 상대전적+해외배당 블렌딩, 이 세션에서 직접 백테스트/검증됨)의 예측을 그대로 가져와 쓴다.
+# 두 시스템이 서로 다른 확률을 보여주는 걸 사용자가 확인하고 요청한 통일 작업.
+KLEAGUE_APP_BASE_URL = "https://kleague-toto-predictor.hyeoks.workers.dev"
+
+NAME_MAP = {
+    "강원FC": "Gangwon FC", "부천FC": "Bucheon FC 1995",
+    "전북현대": "Jeonbuk Hyundai Motors FC", "FC서울": "FC Seoul",
+    "포항스틸": "Pohang Steelers", "김천상무": "Gimcheon Sangmu",
+    "충남아산": "Chungnam Asan FC", "성남FC": "Seongnam FC",
+    "천안시티": "Cheonan City", "용인FC": "Yongin FC",
+    "충북청주": "Cheongju FC", "수원삼성": "Suwon Samsung Bluewings",
+    "화성FC": "Hwaseong FC", "대구FC": "Daegu FC",
+    "울산HDFC": "Ulsan HD FC", "FC안양": "FC Anyang",
+    "대전하나": "Daejeon Hana Citizen", "광주FC": "Gwangju FC",
+    "제주SKFC": "Jeju SK", "인천유나": "Incheon United",
+    "부산아이": "Busan I'Park", "서울이랜": "Seoul E-Land FC",
+    "김포FC": "Gimpo FC", "경남FC": "Gyeongnam FC",
+    "전남드래": "Jeonnam Dragons", "파주프런": "Paju Frontier",
+    "안산그리": "Ansan Greeners", "김해FC": "Gimhae FC 2008",
+}
+
+
+def fetch_kleague_predictions():
+    """배포된 kleague-toto-predictor 앱의 최신 회차 예측을 (영문홈팀,영문원정팀) 키로 반환.
+    앱이 응답하지 않으면 빈 dict를 반환해 해당 경기는 RandomForest로 자연스럽게 대체된다."""
+    try:
+        rounds_res = requests.get(f"{KLEAGUE_APP_BASE_URL}/api/rounds", timeout=10)
+        rounds_res.raise_for_status()
+        rounds = rounds_res.json().get("rounds", [])
+        if not rounds:
+            return {}
+        round_id = rounds[0]["id"]
+        detail_res = requests.get(f"{KLEAGUE_APP_BASE_URL}/api/rounds/{round_id}", timeout=10)
+        detail_res.raise_for_status()
+        lookup = {}
+        for m in detail_res.json().get("matches", []):
+            home_en, away_en = NAME_MAP.get(m["home"]), NAME_MAP.get(m["away"])
+            if not home_en or not away_en:
+                continue
+            p = m["prediction"]
+            lookup[(home_en, away_en)] = {
+                "p_home": round(p["pHome"] * 100, 1),
+                "p_draw": round(p["pDraw"] * 100, 1),
+                "p_away": round(p["pAway"] * 100, 1),
+            }
+        return lookup
+    except Exception as e:
+        print(f"⚠️ kleague-toto-predictor 앱 예측 조회 실패, 해당 경기는 RandomForest로 대체: {e}")
+        return {}
 
 def init_google_sheet():
     secret_key = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY")
@@ -81,20 +133,28 @@ def main():
     model.fit(X_train, y_train, sample_weight=weights)
     
     X_predict = predict_df[FEATURES]
-    raw_probabilities = model.predict_proba(X_predict) 
-    
+    raw_probabilities = model.predict_proba(X_predict)
+
+    kleague_lookup = fetch_kleague_predictions()
+    kleague_used, randomforest_used = 0, 0
     calibrated_results = []
-    
+
     for idx, (_, row) in enumerate(predict_df.iterrows()):
-        p_away = raw_probabilities[idx][0]
-        p_draw = raw_probabilities[idx][1] * 0.75 
-        p_home = raw_probabilities[idx][2]
-        
-        total_p = p_away + p_draw + p_home
-        prob_away = round((p_away / total_p) * 100, 1)
-        prob_draw = round(((p_draw / total_p)) * 100, 1)
-        prob_home = round((p_home / total_p) * 100, 1)
-        
+        app_pred = kleague_lookup.get((str(row['홈팀']), str(row['원정팀'])))
+        if app_pred:
+            prob_home, prob_draw, prob_away = app_pred['p_home'], app_pred['p_draw'], app_pred['p_away']
+            kleague_used += 1
+        else:
+            p_away = raw_probabilities[idx][0]
+            p_draw = raw_probabilities[idx][1] * 0.75
+            p_home = raw_probabilities[idx][2]
+
+            total_p = p_away + p_draw + p_home
+            prob_away = round((p_away / total_p) * 100, 1)
+            prob_draw = round(((p_draw / total_p)) * 100, 1)
+            prob_home = round((p_home / total_p) * 100, 1)
+            randomforest_used += 1
+
         elo_val = float(row['전력차 지표(Elo)'])
         
         if prob_home == prob_away:
@@ -113,6 +173,7 @@ def main():
         ]
         calibrated_results.append(prediction_results_row)
     
+    print(f" 📊 예측 소스: kleague-toto-predictor 앱 {kleague_used}건, RandomForest {randomforest_used}건")
     calibrated_results.sort(key=lambda x: x[1])
     
     report_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈승 확률", "무승부 확률", "원정승 확률", "예측 추천픽", "예측 분석시각"]
