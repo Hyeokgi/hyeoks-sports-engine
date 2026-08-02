@@ -608,8 +608,8 @@ def write_player_db(spreadsheet, all_player_rows):
 def main():
     print("======== [HYEOKS 멀티 매트릭스 통합 엔진 v4.5 Pro 가동] ========")
     TARGET_LEAGUES = {
-        "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가", 
-        "54": "분데스리가", "55": "세리에A", "102": "J1리그"
+        "9080": "K리그1", "9116": "K리그2", "47": "EPL", "87": "라리가",
+        "54": "분데스리가", "55": "세리에A", "223": "J1리그"
     }
     sh = init_google_sheet()
     

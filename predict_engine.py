@@ -36,6 +36,18 @@ NAME_MAP = {
     "김포FC": "Gimpo FC", "경남FC": "Gyeongnam FC",
     "전남드래": "Jeonnam Dragons", "파주프런": "Paju Frontier",
     "안산그리": "Ansan Greeners", "김해FC": "Gimhae FC 2008",
+    "수원FC": "Suwon FC",
+    # J1리그(일본, kleague-toto-predictor 앱에 2026-08 편입된 팀명 매핑과 동일)
+    "FC도쿄": "FC Tokyo", "마치다Z": "Machida Zelvia",
+    "나고야G": "Nagoya Grampus", "시미즈S": "Shimizu S-Pulse",
+    "C오사카": "Cerezo Osaka", "오카야마": "Fagiano Okayama FC",
+    "후쿠오카": "Avispa Fukuoka", "비셀고베": "Vissel Kobe",
+    "산프히로": "Sanfrecce Hiroshima", "제프유나": "JEF United Chiba",
+    "도쿄베르": "Tokyo Verdy", "가와사키": "Kawasaki Frontale",
+    "V바렌나": "V-Varen Nagasaki", "교토상가": "Kyoto Sanga FC",
+    "감바오사카": "Gamba Osaka", "가시마": "Kashima Antlers",
+    "가시와": "Kashiwa Reysol", "미토": "Mito Hollyhock",
+    "우라와": "Urawa Red Diamonds", "요코하마M": "Yokohama F.Marinos",
 }
 
 

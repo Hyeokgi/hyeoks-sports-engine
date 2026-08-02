@@ -28,3 +28,4 @@ jobs:
         run: |
           python crawl_and_update.py
           python predict_engine.py
+          python build_round_analysis_sheet.py
