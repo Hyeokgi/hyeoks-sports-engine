@@ -69,10 +69,15 @@ def fetch_kleague_predictions():
             if not home_en or not away_en:
                 continue
             p = m["prediction"]
+            calib = m.get("calibration") or {}
+            bucket = calib.get("bucket")
             lookup[(home_en, away_en)] = {
                 "p_home": round(p["pHome"] * 100, 1),
                 "p_draw": round(p["pDraw"] * 100, 1),
                 "p_away": round(p["pAway"] * 100, 1),
+                "tier": calib.get("tier"),  # "확신픽"/"보통"/"불확실" (calibration.ts 버킷 기준)
+                "calib_accuracy": round(bucket["accuracy"] * 100, 1) if bucket else None,
+                "calib_n": bucket["n"] if bucket else None,
             }
         return lookup
     except Exception as e:
@@ -147,15 +152,25 @@ def main():
     X_predict = predict_df[FEATURES]
     raw_probabilities = model.predict_proba(X_predict)
 
+    TIER_EMOJI = {"확신픽": "🟢", "보통": "🟡", "불확실": "🔴"}
+
     kleague_lookup = fetch_kleague_predictions()
     kleague_used, randomforest_used = 0, 0
     calibrated_results = []
 
     for idx, (_, row) in enumerate(predict_df.iterrows()):
         app_pred = kleague_lookup.get((str(row['홈팀']), str(row['원정팀'])))
+        # 캘리브레이션(실측 적중률)은 kleague-toto-predictor 앱이 워크포워드 백테스트로 산출한
+        # 값이라 앱 예측을 쓴 경기에만 존재한다. RandomForest 대체 경기는 검증된 적이 없으므로
+        # 억지로 채우지 않고 빈 값으로 남긴다(작업1: 확률 표시의 정직성 개선과 같은 원칙).
+        tier_label, calib_note = "", ""
         if app_pred:
             prob_home, prob_draw, prob_away = app_pred['p_home'], app_pred['p_draw'], app_pred['p_away']
             kleague_used += 1
+            if app_pred.get("tier"):
+                tier_label = f"{TIER_EMOJI.get(app_pred['tier'], '')} {app_pred['tier']}"
+            if app_pred.get("calib_accuracy") is not None:
+                calib_note = f"{app_pred['calib_accuracy']}% (n={app_pred['calib_n']})"
         else:
             p_away = raw_probabilities[idx][0]
             p_draw = raw_probabilities[idx][1] * 0.75
@@ -181,14 +196,18 @@ def main():
         prediction_results_row = [
             str(row['경기ID']), str(row['일시']), str(row['리그']), str(row['홈팀']), str(row['원정팀']),
             f"{prob_home}%", f"{prob_draw}%", f"{prob_away}%", pick,
+            tier_label, calib_note,
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ]
         calibrated_results.append(prediction_results_row)
-    
+
     print(f" 📊 예측 소스: kleague-toto-predictor 앱 {kleague_used}건, RandomForest {randomforest_used}건")
     calibrated_results.sort(key=lambda x: x[1])
-    
-    report_headers = ["경기ID", "일시", "리그", "홈팀", "원정팀", "홈승 확률", "무승부 확률", "원정승 확률", "예측 추천픽", "예측 분석시각"]
+
+    report_headers = [
+        "경기ID", "일시", "리그", "홈팀", "원정팀", "홈승 확률", "무승부 확률", "원정승 확률", "예측 추천픽",
+        "확신도 등급", "구간 실측적중률(참고용, RandomForest 대체 경기는 검증 안 됨)", "예측 분석시각",
+    ]
     
     try: report_sheet = sh.worksheet("HYEOKS_예측리포트")
     except gspread.WorksheetNotFound: report_sheet = sh.add_worksheet(title="HYEOKS_예측리포트", rows="500", cols="15")
