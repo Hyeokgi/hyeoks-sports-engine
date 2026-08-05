@@ -154,8 +154,15 @@ def main():
 
     TIER_EMOJI = {"확신픽": "🟢", "보통": "🟡", "불확실": "🔴"}
 
+    # 2026-08-06: RandomForest는 '전체' 탭에 실제 결과가 존재하는 리그(현재 K리그1/K리그2뿐)로만
+    # 학습된다. 학습 데이터가 0건인 리그(EPL/라리가/분데스리가/세리에A 등)에 그대로 적용하면
+    # 한 번도 본 적 없는 Elo 스케일이라 모델이 판별을 포기하고 무승부로 쏠리는 문제가 실측으로
+    # 확인됨(예측리포트 211/396건이 무승부, 학습데이터 없는 리그만 72~75%로 폭주).
+    # 억지 예측 대신 정직하게 건너뛴다 - app_pred가 있으면(J1 등 앱이 커버하는 경기) 그대로 사용.
+    valid_rf_leagues = set(train_df['리그'].unique())
+
     kleague_lookup = fetch_kleague_predictions()
-    kleague_used, randomforest_used = 0, 0
+    kleague_used, randomforest_used, skipped_no_training_data = 0, 0, 0
     calibrated_results = []
 
     for idx, (_, row) in enumerate(predict_df.iterrows()):
@@ -171,6 +178,9 @@ def main():
                 tier_label = f"{TIER_EMOJI.get(app_pred['tier'], '')} {app_pred['tier']}"
             if app_pred.get("calib_accuracy") is not None:
                 calib_note = f"{app_pred['calib_accuracy']}% (n={app_pred['calib_n']})"
+        elif str(row['리그']) not in valid_rf_leagues:
+            skipped_no_training_data += 1
+            continue
         else:
             p_away = raw_probabilities[idx][0]
             p_draw = raw_probabilities[idx][1] * 0.75
@@ -182,17 +192,12 @@ def main():
             prob_home = round((p_home / total_p) * 100, 1)
             randomforest_used += 1
 
-        elo_val = float(row['전력차 지표(Elo)'])
-        
-        if prob_home == prob_away:
-            if elo_val > 15.0: pick = "홈승(▲)"
-            elif elo_val < -15.0: pick = "원정승(▼)"
-            else: pick = "무승부(■)"
-        else:
-            arr = [prob_away, prob_draw, prob_home]
-            am = np.argmax(arr)
-            pick = "원정승(▼)" if am == 0 else ("무승부(■)" if am == 1 else "홈승(▲)")
-        
+        # pick은 반올림 전 원본 확률로 argmax(반올림된 값끼리 우연히 같아지면 리그 무관한
+        # Elo±15 임계값으로 새는 버그가 있었음 - 원본 확률 기준으로 통일해 제거).
+        pick = "원정승(▼)" if prob_away >= prob_draw and prob_away >= prob_home else (
+            "무승부(■)" if prob_draw >= prob_home else "홈승(▲)"
+        )
+
         prediction_results_row = [
             str(row['경기ID']), str(row['일시']), str(row['리그']), str(row['홈팀']), str(row['원정팀']),
             f"{prob_home}%", f"{prob_draw}%", f"{prob_away}%", pick,
@@ -201,7 +206,8 @@ def main():
         ]
         calibrated_results.append(prediction_results_row)
 
-    print(f" 📊 예측 소스: kleague-toto-predictor 앱 {kleague_used}건, RandomForest {randomforest_used}건")
+    print(f" 📊 예측 소스: kleague-toto-predictor 앱 {kleague_used}건, RandomForest {randomforest_used}건, "
+          f"학습데이터 없어 스킵 {skipped_no_training_data}건")
     calibrated_results.sort(key=lambda x: x[1])
 
     report_headers = [
