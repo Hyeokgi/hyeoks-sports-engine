@@ -33,11 +33,21 @@ def init_google_sheet():
 
 
 def build_historical_rows():
-    """1~41회차: betman 과거기록 파일 기반, 2축(투표 vs 실제결과) - 모델 예측 컬럼은 공란."""
+    """1~41회차: betman 과거기록 파일 기반, 2축(투표 vs 실제결과).
+    모델 예측 컬럼은 그 시절 앱이 없어 원래 공란이었지만, K리그1/K리그2/J1리그 경기에 한해
+    2026-08-06에 point-in-time(그 경기 이전 데이터만 사용, look-ahead 없음) walk-forward
+    재구성을 해서 data/retro_model_picks_1_41.json으로 채웠다(574경기 중 63건, 나머지는
+    EPL/세리에A 등 유럽리그라 우리 시스템에 다중시즌 Elo 히스토리가 없어 재구성 불가)."""
     with open(ROOT / "data" / "toto_rounds_raw.json", encoding="utf-8") as f:
         rounds = json.load(f)
     with open(ROOT / "data" / "toto_votes_raw.json", encoding="utf-8") as f:
         votes = json.load(f)
+    retro_path = ROOT / "data" / "retro_model_picks_1_41.json"
+    retro_lookup = {}
+    if retro_path.exists():
+        with open(retro_path, encoding="utf-8") as f:
+            for row in json.load(f):
+                retro_lookup[(row["round"], row["seq"])] = row
 
     rows = []
     skipped_mismatch = 0
@@ -56,13 +66,24 @@ def build_historical_rows():
             actual = RESULT_MAP[m["result"]]
             votes3 = {"홈승": v["voteWin"], "무승부": v["voteDraw"], "원정승": v["voteLose"]}
             fav = max(votes3, key=votes3.get)
+
+            retro = retro_lookup.get((rnum, m["seq"]))
+            if retro:
+                model_pick, conf_gap, tier = retro["model_pick"], retro["conf_gap_pct"], retro["tier"]
+                calib_acc = retro["calib_accuracy_pct"]
+                model_upset = "이변" if retro["model_upset"] else ""
+                source = "betman 과거기록 + 회고재구성모델(2026-08-06)"
+            else:
+                model_pick = conf_gap = tier = calib_acc = model_upset = ""
+                source = "betman 과거기록(1~41회차)"
+
             rows.append([
                 rnum, m["seq"], m["date"], m["home"], m["away"],
                 m["hg"], m["ag"], actual,
                 fav, round(votes3[fav], 1), round(votes3[actual], 1),
                 "이변" if actual != fav else "",
-                "", "", "", "", "",  # 모델 관련 컬럼(그 시절 앱 없었음)
-                "betman 과거기록(1~41회차)",
+                model_pick, conf_gap, tier, calib_acc, model_upset,
+                source,
             ])
     if skipped_mismatch:
         print(f"경고: 팀명 불일치로 {skipped_mismatch}건 제외함 (betman 원본 소스 자체의 순서 불일치)")
