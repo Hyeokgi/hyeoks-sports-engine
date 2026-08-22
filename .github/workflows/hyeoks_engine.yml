@@ -26,6 +26,5 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
         run: |
-          python crawl_and_update.py
           python predict_engine.py
 
